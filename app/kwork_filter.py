@@ -42,18 +42,39 @@ DEVELOPER_PROFILE = """Профиль разработчика:
 СИЛЬНЫЕ СТОРОНЫ:
 - AI-интеграции в собственном коде
 - Чат-боты с AI-контекстом и памятью
+- Telegram/Discord/VK боты на Python (aiogram/pyrogram) — это основной инструмент, НЕ серая зона
+- Парсеры сайтов/маркетплейсов (Wildberries, Ozon и т.п.) на Python с aiogram-фронтом — прямое попадание
 - Real-time на Socket.IO
 - Админки, дашборды, личные кабинеты с RBAC
 - Fullstack с нуля
+- Excel/CSV отчёты и интеграции (pandas, openpyxl)
+- САЙТ/ЛЕНДИНГ ПОД КЛЮЧ с собственным дизайном (Next.js + Tailwind, дизайн делается в Claude Design/Figma) — это УТП когда у заказчика НЕТ готового макета и он хочет "придумайте и сделайте"
 
 НЕТ В СТЕКЕ (no-code):
 - n8n, Make.com, Zapier, Bubble, Airtable Automations, Retool
 
 ПОДХОДИТ:
-- Telegram/Discord/VK боты (Node.js/TypeScript или Python/aiogram)
+- Telegram/Discord/VK боты (Node.js/TypeScript или Python/aiogram) — ПРЯМОЕ попадание
 - REST API, бэкенд, интеграции
-- Парсеры с обработкой при 40к+
+- Парсеры с обработкой/интерфейсом при 40к+
 - Простые RN/Flutter при 80к+
+- Сайты/лендинги ПОД КЛЮЧ когда макета НЕТ и заказчик готов к собственному дизайну разработчика
+
+ТРИ КАТЕГОРИИ САЙТОВ/ЛЕНДИНГОВ — РАЗЛИЧАТЬ СТРОГО:
+1. Верстка по готовому макету (Figma/PSD/XD есть) — НЕ ПОДХОДИТ, это не моё.
+   Маркеры: "есть макет в Figma", "готовый PSD", "сверстать по дизайну", "пиксель-перфект".
+2. Чистый дизайн без кода — НЕ ПОДХОДИТ, это для дизайнеров.
+   Маркеры: "нужен дизайнер", "опыт FMCG", "трендовый дизайн", "концепт бренда",
+   "Behance-портфолио", "презентация дизайна".
+3. Сайт/лендинг ПОД КЛЮЧ без готового макета — ПОДХОДИТ, это УТП.
+   Маркеры: "сделать сайт с нуля", "разработать лендинг", "под ключ", "дизайн и разработка",
+   "нет готовых макетов", "придумайте и сделайте", отсутствие упоминания Figma/PSD.
+
+ВАЖНО ПРО СРОКИ KWORK:
+На Kwork поле "срок" означает СРОК ПОДАЧИ ЗАЯВОК (через сколько дней заказ закроется),
+а НЕ срок исполнения. "1-2 дня" значит только что заказчик спешит найти исполнителя,
+реальный срок исполнения обсуждается отдельно. НЕ штрафовать скор за "короткий срок"
+если задача явно требует 2-3 недели работы — это просто означает что скоро закроют приём заявок.
 
 НЕ ПОДХОДИТ:
 - CMS (Bitrix/WordPress/Tilda/Joomla/OpenCart/Shopify/Wix)
@@ -136,6 +157,100 @@ TECH_INCOMPETENCE_FLAGS = (
     r"возьми(те)?\s+готовое\s+решение",
 )
 _TECH_INCOMPETENCE_RE = re.compile("|".join(TECH_INCOMPETENCE_FLAGS), re.IGNORECASE)
+
+
+# === Детекция категории сайта/лендинга ===
+
+# Категория 1: готовый макет есть → НЕ моё (верстка чужого дизайна)
+READY_MOCKUP_FLAGS = (
+    r"есть\s+макет\s+в\s+(figma|фигм|psd|sketch|xd)",
+    r"готов(ый|ая|ые)\s+макет",
+    r"макет(ы)?\s+в\s+(figma|фигм|psd)",
+    r"(figma|фигма|psd)\s+макет",
+    r"сверстать\s+по\s+(макету|дизайну)",
+    r"пиксель[\s-]*перфект",
+    r"pixel[\s-]*perfect",
+    r"дизайн\s+(уже\s+)?(есть|готов)",
+    r"по\s+готовому\s+макету",
+    r"прикрепил(а|и)?\s+(figma|макет|psd)",
+    r"ссылк(а|у)\s+на\s+figma",
+)
+_READY_MOCKUP_RE = re.compile("|".join(READY_MOCKUP_FLAGS), re.IGNORECASE)
+
+# Категория 2: чистый дизайн без кода → НЕ моё (нужен дизайнер)
+PURE_DESIGN_FLAGS = (
+    r"нужен\s+дизайнер",
+    r"ищ(ем|у|ите)\s+дизайнер",
+    r"требуется\s+дизайнер",
+    r"\bfmcg\b",
+    r"опыт\s+(в\s+)?(fmcg|брендинг|fashion|lifestyle)",
+    r"дизайнерск(ий|ая|ое)",
+    r"концепт(\s+|\-)(бренда|страниц|дизайн|лендинг)",
+    r"трендов(ые|ый|ой)\s+(страниц|дизайн|лендинг|сайт)",
+    r"актуальн(ый|ое|ая)\s+мировой",
+    r"свежий\s+взгляд\s+на\s+(дизайн|тренд)",
+    r"портфолио\s+(на\s+)?behance",
+    r"арт[\s-]*директор",
+    r"визуальн(ая|ый|ые)\s+(концепци|стиль|идентика)",
+    r"айдентика",
+    r"брендинг",
+    r"минималистичн(ый|ая|ое)\s+(лендинг|страниц|дизайн|сайт)",
+    r"design(er)?\s+landing",
+)
+_PURE_DESIGN_RE = re.compile("|".join(PURE_DESIGN_FLAGS), re.IGNORECASE)
+
+# Категория 3: под ключ с собственным дизайном → МОЁ УТП
+TURNKEY_SITE_FLAGS = (
+    r"под\s+ключ",
+    r"с\s+нуля\s+(сайт|лендинг)",
+    r"нет\s+(готов(ого|ых))?\s+макет",
+    r"без\s+макет",
+    r"придумайте\s+и\s+сделайте",
+    r"разработать\s+(и\s+)?(сайт|лендинг)",
+    r"создать\s+(сайт|лендинг)\s+(для|с)",
+    r"разработка\s+(сайта|лендинга)",
+    r"дизайн\s+и\s+разработка",
+)
+_TURNKEY_SITE_RE = re.compile("|".join(TURNKEY_SITE_FLAGS), re.IGNORECASE)
+
+# Маркер что задача вообще про сайт/лендинг (чтобы не зря проверять остальное)
+SITE_CONTEXT_FLAGS = (
+    r"\bсайт", r"\bлендинг", r"landing[\s-]?page",
+    r"одностраничн", r"многостраничн", r"веб[\s-]*страниц",
+)
+_SITE_CONTEXT_RE = re.compile("|".join(SITE_CONTEXT_FLAGS), re.IGNORECASE)
+
+
+def detect_site_category(title: str, description: str) -> tuple[str, str]:
+    """
+    Определить категорию сайт/лендинг-заказа.
+
+    Returns:
+        (category, explanation):
+        - "not_site": не про сайт/лендинг вообще
+        - "ready_mockup": есть готовый макет → НЕ моё
+        - "pure_design": чистый дизайн без кода → НЕ моё
+        - "turnkey": под ключ с собственным дизайном → МОЁ УТП
+        - "ambiguous": про сайт, но категория не определена — Claude решит
+    """
+    text = f"{title}\n{description}"
+
+    if not _SITE_CONTEXT_RE.search(text):
+        return "not_site", ""
+
+    if _READY_MOCKUP_RE.search(text):
+        m = _READY_MOCKUP_RE.search(text)
+        return "ready_mockup", f"есть макет: '{m.group(0)}'"
+
+    if _PURE_DESIGN_RE.search(text):
+        m = _PURE_DESIGN_RE.search(text)
+        return "pure_design", f"чистый дизайн: '{m.group(0)}'"
+
+    if _TURNKEY_SITE_RE.search(text):
+        m = _TURNKEY_SITE_RE.search(text)
+        return "turnkey", f"под ключ: '{m.group(0)}'"
+
+    return "ambiguous", "про сайт, но категория не определена"
 
 HARD_REJECT_KEYWORDS = (
     r"\b1c[\s-]*битрикс\b", r"\bбитрикс\b", r"\bbitrix\b",
@@ -315,6 +430,7 @@ PRE-CHECK:
 - Scope flags: {scope_flags} (penalty {scope_penalty})
 - Open-ended: {open_ended_flags} (penalty {open_ended_penalty})
 - Tech incompetence: {tech_flags} (penalty {tech_penalty})
+- Категория сайта/лендинга: {site_category} ({site_note})
 ===
 
 Оцени 1-10. Не "подходит технически", а "стоит ли тратить один из 30 патронов".
@@ -324,13 +440,17 @@ A. No-code требуется (n8n/Make/Zapier) → скор НЕ ВЫШЕ 4.
 B. Open-ended scope + бюджет <150к → скор НЕ ВЫШЕ 5.
 C. Tech incompetence + серьёзная задача → скор НЕ ВЫШЕ 5.
 D. Все penalty складываются.
+E. site_category == "turnkey" (сайт под ключ без макета) — это УТП разработчика,
+   добавить +2 к базовому скору. Он умеет дизайн через Claude Design и сразу в код.
+F. site_category == "ambiguous" — неясно есть ли макет. Если в описании НЕТ явного упоминания
+   Figma/PSD/макета — считать как turnkey (+1 бонус). Если есть намёки на готовый дизайн — как есть.
 
 БАЗОВЫЙ СКОР:
 
 Стек (до 4):
-+2 прямое совпадение (Next.js/NestJS/TS/PostgreSQL)
-+1 серая зона (Vue→React, Python-бот)
-+1 сильная сторона (AI на своём коде, real-time, админка)
++2 прямое совпадение (Next.js/NestJS/TS/PostgreSQL) ИЛИ Python/aiogram бот ИЛИ парсер+веб-интерфейс
++1 серая зона (Vue→React, мобилка)
++1 сильная сторона (AI на своём коде, real-time, админка, WB/Ozon-парсер с Excel-отчётом)
 
 Бюджет (до 3):
 +3 верхняя ≥100к, +2 70-100к, +1 50-70к, 0 <50к
@@ -341,9 +461,13 @@ AI (до 2):
 
 Качество (до 2):
 +1 детальное описание с критериями
-+1 адекватный срок (2-4 недели)
++1 адекватный срок (2-4 недели) — но "срок" на Kwork = срок ПОДАЧИ ЗАЯВОК, не исполнения
 +1 мало откликов (<10)
 -2 пустое/противоречивое
+
+ВАЖНО: НЕ штрафовать скор за короткий "срок" (1-3 дня) в заказе — это срок закрытия
+приёма откликов на Kwork, а не срок исполнения работы. Реальный срок исполнения
+обсуждается в переписке. Много откликов (30+) — просто признак популярного заказа.
 
 ИТОГ = базовый + penalty.
 
@@ -375,6 +499,7 @@ OFFER_PROMPT_CLAUDE = """Ты — fullstack с AI-специализацией (
 - Бот: "Пишу ботов 5 лет — Node.js/TypeScript и Python/aiogram."
 - Fullstack: "Работаю на Next.js + NestJS + PostgreSQL, специализируюсь на [конкретика]."
 - Real-time: "Socket.IO — рабочая лошадка, делал чаты и live-дашборды."
+- Сайт/лендинг под ключ (site_category=turnkey): "Разработчик-дизайнер — делаю сайт целиком, от концепта до деплоя. Дизайн создаю сам (Claude Design + Figma), реализую на Next.js + Tailwind. Без отдельного дизайнера, без посредников, один исполнитель на весь цикл."
 
 СТРУКТУРА:
 1: Приветствие + позиционирование
@@ -400,6 +525,8 @@ scope_unclear=да → "от X ₽".
 Бюджет: {budget}
 AI: {is_ai}
 ТЗ размыто: {scope_unclear}
+Категория сайта: {site_category}
+===
 ===
 """
 
@@ -430,7 +557,7 @@ async def score_project(
 ) -> Dict:
     default_result = {
         "score": 5, "is_ai": False, "reason": "no API key",
-        "hard_reject": False, "scope_unclear": False, "no_code_required": None,
+        "hard_reject": False, "scope_unclear": False, "no_code_required": None, "site_category": "not_site",
         "breakdown": {},
     }
     if not anthropic_api_key:
@@ -444,7 +571,7 @@ async def score_project(
             logger.info("HardReject [%s]: %s", title[:60], hr)
             return {
                 "score": 0, "is_ai": False, "reason": f"hard reject: '{hr}'",
-                "hard_reject": True, "scope_unclear": False, "no_code_required": None,
+                "hard_reject": True, "scope_unclear": False, "no_code_required": None, "site_category": "not_site",
                 "breakdown": {},
             }
 
@@ -454,7 +581,26 @@ async def score_project(
         logger.info("BudgetLow [%s]: %s", title[:60], bi)
         return {
             "score": 0, "is_ai": is_ai, "reason": bi,
-            "hard_reject": True, "scope_unclear": False, "no_code_required": None,
+            "hard_reject": True, "scope_unclear": False, "no_code_required": None, "site_category": "not_site",
+            "breakdown": {},
+        }
+
+    # Категория сайт/лендинг: готовый макет или чистый дизайн = hard reject
+    site_category, site_note = detect_site_category(title, description)
+    if site_category == "ready_mockup":
+        logger.info("SiteCategory [%s]: готовый макет — %s", title[:60], site_note)
+        return {
+            "score": 0, "is_ai": is_ai,
+            "reason": f"верстка по готовому макету — не моё ({site_note})",
+            "hard_reject": True, "scope_unclear": False, "no_code_required": None, "site_category": "not_site",
+            "breakdown": {},
+        }
+    if site_category == "pure_design":
+        logger.info("SiteCategory [%s]: чистый дизайн — %s", title[:60], site_note)
+        return {
+            "score": 0, "is_ai": is_ai,
+            "reason": f"чистый дизайн без кода — ищут дизайнера ({site_note})",
+            "hard_reject": True, "scope_unclear": False, "no_code_required": None, "site_category": "not_site",
             "breakdown": {},
         }
 
@@ -480,6 +626,8 @@ async def score_project(
         open_ended_penalty=open_pen,
         tech_flags=", ".join(tech_flags) if tech_flags else "нет",
         tech_penalty=tech_pen,
+        site_category=site_category,
+        site_note=site_note if site_note else "нет",
     )
 
     try:
@@ -516,12 +664,14 @@ async def score_project(
             "hard_reject": False,
             "scope_unclear": scope_unclear,
             "no_code_required": no_code,
+            "site_category": site_category,
         }
     except Exception as exc:
         logger.warning("Scoring error for '%s': %s", title[:60], exc)
         return {
             "score": 5, "is_ai": is_ai, "reason": f"error: {exc}",
-            "hard_reject": False, "scope_unclear": False, "no_code_required": None,
+            "hard_reject": False, "scope_unclear": False, "no_code_required": None, "site_category": "not_site",
+            "site_category": "not_site",
             "breakdown": {},
         }
 
@@ -533,6 +683,7 @@ async def generate_offer_claude(
     anthropic_api_key: str,
     is_ai: bool = False,
     scope_unclear: bool = False,
+    site_category: str = "not_site",
     max_retries: int = 1,
 ) -> str:
     prompt = OFFER_PROMPT_CLAUDE.format(
@@ -541,6 +692,7 @@ async def generate_offer_claude(
         budget=budget,
         is_ai="да" if is_ai else "нет",
         scope_unclear="да — НЕ давать готовое решение и точную цену" if scope_unclear else "нет",
+        site_category=site_category,
     )
 
     for attempt in range(max_retries + 1):

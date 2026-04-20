@@ -24,6 +24,12 @@ from kwork import Kwork
 
 logger = logging.getLogger(__name__)
 
+# Минимальный скор чтобы заказ попал в Telegram. Ниже — только в логи.
+# 5-6 — пограничные (можно глянуть, но не рекомендую).
+# 7+ — рекомендую отклик.
+# ≤4 — полное игнорирование, молчим.
+TELEGRAM_SCORE_THRESHOLD = 5
+
 UPWORK_TEMPLATE = (
     "☘️ <b>{title}</b>\n\n"
     "<i>{description}</i>\n\n"
@@ -35,15 +41,10 @@ UPWORK_TEMPLATE = (
 
 
 def _kwork_action_keyboard(project_id: int, project_url: str) -> InlineKeyboardMarkup:
-    """
-    Кнопка «✅ Отправил отклик» — нажатие инкрементирует счётчик квоты.
-    Кнопка «Открыть на Kwork» — просто ссылка.
-    """
+    """Клавиатура под рекомендованными заказами — с кнопками учёта квоты."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(text="🔗 Открыть на Kwork", url=project_url),
-            ],
+            [InlineKeyboardButton(text="🔗 Открыть на Kwork", url=project_url)],
             [
                 InlineKeyboardButton(
                     text="✅ Отправил отклик",
@@ -74,8 +75,10 @@ def _format_kwork_message(
 ) -> str:
     if respond:
         header = f"{'🔥' if score >= 9 else '✅'} РЕКОМЕНДУЮ ОТКЛИК — скор {score}/10"
+    elif score >= TELEGRAM_SCORE_THRESHOLD:
+        header = f"👀 Пограничный — скор {score}/10 (ждём лучшего)"
     else:
-        header = f"👀 Пропуск — скор {score}/10"
+        header = f"Пропуск — скор {score}/10"
 
     badges = []
     if is_ai:
@@ -230,7 +233,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         )
         projects.extend(get_project_data(other_projects["response"]))
 
-    # === Квота: rolling-период от даты пополнения ===
+    # Квота: rolling-период Kwork
     quota_state = get_quota()
     days_until_refill = get_days_until_refill()
     quota = quota_status(
@@ -243,7 +246,8 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         "total": len(projects),
         "seen": 0,
         "hard_reject": 0,
-        "sent_tg": 0,
+        "low_score_silenced": 0,
+        "borderline_sent": 0,
         "recommended": 0,
     }
 
@@ -281,9 +285,25 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             anthropic_api_key=config.anthropic_api_key,
         )
 
-        # Hard reject — вообще не слать в Telegram (экономим внимание)
+        # Hard reject — тишина, только в логи
         if score_result["hard_reject"]:
             stats["hard_reject"] += 1
+            logger.info(
+                "HardReject [%s]: %s",
+                title[:60], score_result.get("reason", ""),
+            )
+            await asyncio.sleep(random.choice([1, 2, 3]))
+            continue
+
+        # Низкий скор (≤4) — тоже молчим
+        if score_result["score"] < TELEGRAM_SCORE_THRESHOLD:
+            stats["low_score_silenced"] += 1
+            logger.info(
+                "LowScore [%s] score=%d: %s",
+                title[:60],
+                score_result["score"],
+                score_result.get("reason", ""),
+            )
             await asyncio.sleep(random.choice([1, 2, 3]))
             continue
 
@@ -309,15 +329,15 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             scope_unclear=score_result.get("scope_unclear", False),
         )
 
-        # Для рекомендованных — кнопки учёта квоты.
-        # Для прочих — обычная кнопка "Открыть".
         if respond:
             keyboard = _kwork_action_keyboard(kw_project.id, kw_project_url)
+            stats["recommended"] += 1
         else:
             btn_data = {"id": kw_project.id, "lang": "ru", "username": config.bot_username}
             keyboard = apply_button(
                 text="Открыть на Kwork", url=kw_project_url, data=btn_data
             )
+            stats["borderline_sent"] += 1
 
         await bot.send_message(
             chat_id=config.tg_group,
@@ -325,35 +345,34 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             message_thread_id=config.tg_topic_id,
             reply_markup=keyboard,
         )
-        stats["sent_tg"] += 1
 
-        if respond:
-            stats["recommended"] += 1
-            if config.anthropic_api_key:
-                offer = await generate_offer_claude(
-                    title=title,
-                    description=desc,
-                    budget=budget_str,
-                    anthropic_api_key=config.anthropic_api_key,
-                    is_ai=score_result["is_ai"],
-                    scope_unclear=score_result.get("scope_unclear", False),
+        if respond and config.anthropic_api_key:
+            offer = await generate_offer_claude(
+                title=title,
+                description=desc,
+                budget=budget_str,
+                anthropic_api_key=config.anthropic_api_key,
+                is_ai=score_result["is_ai"],
+                scope_unclear=score_result.get("scope_unclear", False),
+                site_category=score_result.get("site_category", "not_site"),
+            )
+            if offer:
+                await bot.send_message(
+                    chat_id=config.tg_group,
+                    text=f"📝 <b>Готовый отклик:</b>\n\n{html.quote(offer)}",
+                    message_thread_id=config.tg_topic_id,
                 )
-                if offer:
-                    await bot.send_message(
-                        chat_id=config.tg_group,
-                        text=f"📝 <b>Готовый отклик:</b>\n\n{html.quote(offer)}",
-                        message_thread_id=config.tg_topic_id,
-                    )
 
         await asyncio.sleep(random.choice([1, 2, 3]))
 
     logger.info(
-        "Kwork cycle: total=%d, seen=%d, new=%d, hard_reject=%d, sent_tg=%d, recommended=%d",
+        "Kwork cycle: total=%d seen=%d new=%d hard_reject=%d low_score=%d borderline=%d recommended=%d",
         stats["total"],
         stats["seen"],
         stats["total"] - stats["seen"],
         stats["hard_reject"],
-        stats["sent_tg"],
+        stats["low_score_silenced"],
+        stats["borderline_sent"],
         stats["recommended"],
     )
 
