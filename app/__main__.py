@@ -1,7 +1,10 @@
 import logging
+import subprocess
 import sys
+from datetime import datetime
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.bot import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
@@ -16,7 +19,7 @@ from app.config_reader import Settings
 from app.db.tables import PROJECT_TABLES
 from app.parser import get_kwork_projects, get_upwork_projects
 from app.web.routes import create_offer, get_offers, home
-
+from app.bot.quota_handlers import quota_router
 
 async def database_connection(config: Settings, close=False, persist=True) -> None:
     db = engine_finder(config.piccolo_conf)
@@ -69,6 +72,26 @@ async def on_startup(
 
     scheduler.start()
 
+    # Notify admin that the bot is up and which code version is loaded
+    try:
+        git_sha = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except Exception:
+        git_sha = "unknown"
+    startup_msg = (
+        "✅ <b>Бот запущен</b>\n"
+        f"Время: <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>\n"
+        f"Версия: <code>{git_sha}</code>\n"
+        f"Webhook: <code>{webhook_url}</code>\n"
+        f"Фильтр: {'Claude haiku' if config.anthropic_api_key else 'выключен'}"
+    )
+    try:
+        await bot.send_message(chat_id=config.tg_admin, text=startup_msg)
+    except Exception as exc:
+        logging.warning("Failed to send startup notification: %s", exc)
+
 
 async def on_shutdown(config: Settings, scheduler: AsyncIOScheduler):
     await database_connection(config, close=True)
@@ -82,9 +105,11 @@ def create_bot(config: Settings) -> Bot:
 
     return Bot(
         token=config.tg_token,
-        parse_mode=ParseMode.HTML,
         session=session,
-        disable_web_page_preview=True,
+        default=DefaultBotProperties(
+            parse_mode=ParseMode.HTML,
+            link_preview_is_disabled=True,
+        ),
     )
 
 
@@ -101,6 +126,7 @@ def main():
     dp.shutdown.register(on_shutdown)
 
     dp.include_router(router)
+    dp.include_router(quota_router)
 
     scheduler = AsyncIOScheduler()
     dp["scheduler"] = scheduler

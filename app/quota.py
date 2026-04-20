@@ -1,0 +1,170 @@
+"""
+Quota tracking for Kwork responses.
+
+Kwork использует rolling-период: квота пополняется на дате N (например, 12 мая),
+не 1 числа каждого месяца. Этот модуль отслеживает:
+- Использованные отклики в текущем периоде
+- Дату следующего пополнения
+- Автоматический сброс при наступлении даты пополнения
+"""
+
+import json
+import os
+from datetime import date, timedelta
+from typing import Dict
+
+QUOTA_FILE = os.path.join("app", "db", "database", "quota.json")
+
+# Kwork даёт 30 откликов на период
+MONTHLY_QUOTA = 30
+# Период длится 30 дней (rolling от даты пополнения)
+QUOTA_PERIOD_DAYS = 30
+
+
+def _default_state() -> dict:
+    """Initial state. User must call init_quota() to set correct refill date."""
+    today = date.today()
+    # Предположим, что следующее пополнение через 30 дней (пересчитается при init)
+    next_refill = today + timedelta(days=QUOTA_PERIOD_DAYS)
+    return {
+        "responses_used": 0,
+        "responses_used_today": 0,
+        "next_refill_date": next_refill.isoformat(),
+        "last_reset_date": today.isoformat(),
+    }
+
+
+def load_quota() -> dict:
+    if not os.path.exists(QUOTA_FILE):
+        os.makedirs(os.path.dirname(QUOTA_FILE), exist_ok=True)
+        state = _default_state()
+        save_quota(state)
+        return state
+    try:
+        with open(QUOTA_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return _default_state()
+
+
+def save_quota(state: dict) -> None:
+    os.makedirs(os.path.dirname(QUOTA_FILE), exist_ok=True)
+    with open(QUOTA_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+def init_quota(next_refill_date: date, responses_used: int = 0) -> dict:
+    """
+    Установить параметры квоты вручную.
+    Используй когда бот только поставил или когда Kwork изменил тарифную дату.
+
+    Args:
+        next_refill_date: дата следующего пополнения (из Kwork UI)
+        responses_used: сколько уже потрачено в текущем периоде
+
+    Example:
+        init_quota(date(2026, 5, 12), responses_used=4)
+    """
+    today = date.today()
+    state = {
+        "responses_used": responses_used,
+        "responses_used_today": 0,
+        "next_refill_date": next_refill_date.isoformat(),
+        "last_reset_date": today.isoformat(),
+    }
+    save_quota(state)
+    return state
+
+
+def get_quota() -> dict:
+    """
+    Загрузить квоту и автоматически:
+    - Сбросить дневной счётчик если новый день
+    - Сбросить месячный счётчик + перенести дату пополнения на +30 дней
+      если дата пополнения прошла
+    """
+    state = load_quota()
+    today = date.today()
+    today_str = today.isoformat()
+    changed = False
+
+    # Ежедневный сброс
+    if state.get("last_reset_date") != today_str:
+        state["responses_used_today"] = 0
+        state["last_reset_date"] = today_str
+        changed = True
+
+    # Сброс квоты при наступлении даты пополнения
+    next_refill_str = state.get("next_refill_date")
+    if next_refill_str:
+        try:
+            next_refill = date.fromisoformat(next_refill_str)
+            if today >= next_refill:
+                # Период закончился — сбрасываем счётчик и двигаем дату
+                state["responses_used"] = 0
+                # Новая дата пополнения = предыдущая + 30 дней (или от сегодня если сильно отстали)
+                new_refill = max(next_refill + timedelta(days=QUOTA_PERIOD_DAYS),
+                                 today + timedelta(days=QUOTA_PERIOD_DAYS))
+                state["next_refill_date"] = new_refill.isoformat()
+                changed = True
+        except ValueError:
+            pass
+
+    if changed:
+        save_quota(state)
+    return state
+
+
+def increment_response() -> dict:
+    """Записать что отклик реально был отправлен."""
+    state = get_quota()
+    state["responses_used"] += 1
+    state["responses_used_today"] += 1
+    save_quota(state)
+    return state
+
+
+def reset_today() -> dict:
+    state = get_quota()
+    state["responses_used_today"] = 0
+    save_quota(state)
+    return state
+
+
+def set_remaining(remaining: int) -> dict:
+    """
+    Синхронизировать счётчик с реальным значением из Kwork.
+    Используй если бот ошибся в счёте и ты видишь в Kwork другое число.
+
+    Example:
+        set_remaining(26)  # в Kwork написано "Осталось 26 из 30"
+    """
+    state = get_quota()
+    state["responses_used"] = max(0, MONTHLY_QUOTA - remaining)
+    save_quota(state)
+    return state
+
+
+def get_days_until_refill() -> int:
+    """Сколько дней до пополнения квоты."""
+    state = get_quota()
+    next_refill_str = state.get("next_refill_date")
+    if not next_refill_str:
+        return QUOTA_PERIOD_DAYS
+    try:
+        next_refill = date.fromisoformat(next_refill_str)
+        diff = (next_refill - date.today()).days
+        return max(0, diff)
+    except ValueError:
+        return QUOTA_PERIOD_DAYS
+
+
+def get_period_progress() -> float:
+    """
+    Прогресс текущего периода 0.0-1.0.
+    0.0 = только что пополнилось, 1.0 = сегодня день пополнения.
+    """
+    days_left = get_days_until_refill()
+    if days_left >= QUOTA_PERIOD_DAYS:
+        return 0.0
+    return (QUOTA_PERIOD_DAYS - days_left) / QUOTA_PERIOD_DAYS

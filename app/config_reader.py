@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 
 from dotenv import load_dotenv
 from piccolo.conf.apps import AppRegistry
@@ -34,6 +35,8 @@ class Settings(BaseSettings):
     app_base_url: str
     app_host: str = "localhost"
     app_port: int = 8081
+
+    anthropic_api_key: Optional[str] = None
 
     class Config:
         env_file = ".env"
