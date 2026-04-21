@@ -554,10 +554,12 @@ async def score_project(
     deadline: str,
     responses_count: int,
     anthropic_api_key: Optional[str],
+    hired_percent: Optional[int] = None,
 ) -> Dict:
     default_result = {
         "score": 5, "is_ai": False, "reason": "no API key",
         "hard_reject": False, "scope_unclear": False, "no_code_required": None, "site_category": "not_site",
+        "hire_rate_penalty": False, "hired_percent": hired_percent,
         "breakdown": {},
     }
     if not anthropic_api_key:
@@ -604,6 +606,18 @@ async def score_project(
             "breakdown": {},
         }
 
+    # Сайт под ключ: верхняя планка должна быть ≥60 000 ₽
+    if site_category == "turnkey":
+        effective_limit = limit or wanted
+        if effective_limit and effective_limit < 60000:
+            reason = f"сайт под ключ, верхняя планка {effective_limit:,} < 60 000 ₽"
+            logger.info("TurnkeyBudgetLow [%s]: %s", title[:60], reason)
+            return {
+                "score": 0, "is_ai": is_ai, "reason": reason,
+                "hard_reject": True, "scope_unclear": False, "no_code_required": None,
+                "site_category": site_category, "breakdown": {},
+            }
+
     no_code = detect_no_code_required(title, description)
     scope_pen, scope_flags = detect_scope_red_flags(title, description)
     open_pen, open_flags = detect_open_ended_scope(title, description)
@@ -632,25 +646,73 @@ async def score_project(
 
     try:
         client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
-        message = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=500,
-            temperature=0,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = message.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
-        result = json.loads(raw)
+
+        async def _call(extra_instruction: str = "") -> str:
+            full_prompt = prompt + ("\n\n" + extra_instruction if extra_instruction else "")
+            msg = await client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=500,
+                temperature=0,
+                messages=[{"role": "user", "content": full_prompt}],
+            )
+            r = msg.content[0].text.strip()
+            if r.startswith("```"):
+                r = r.split("```")[1]
+                if r.startswith("json"):
+                    r = r[4:]
+                r = r.strip()
+            return r
+
+        raw = await _call()
+        try:
+            result = json.loads(raw)
+        except json.JSONDecodeError as je:
+            logger.warning(
+                "JSON parse failed for '%s': %s — retrying with strict instruction",
+                title[:60], je,
+            )
+            strict = (
+                "КРИТИЧНО: верни СТРОГО валидный JSON. Все кавычки внутри строк "
+                "значений ЭКРАНИРУЙ обратным слешем (\\\"). Не добавляй текст до "
+                "или после JSON. Не используй markdown."
+            )
+            try:
+                raw2 = await _call(strict)
+                result = json.loads(raw2)
+            except (json.JSONDecodeError, Exception) as je2:
+                logger.warning(
+                    "JSON parse failed twice for '%s': %s — fallback score=5",
+                    title[:60], je2,
+                )
+                scope_unclear = bool(scope_flags) or bool(open_flags) or bool(tech_flags)
+                return {
+                    "score": 6, "is_ai": is_ai,
+                    "reason": "[json_failed] fallback: не удалось распарсить JSON от Claude",
+                    "hard_reject": False, "scope_unclear": scope_unclear,
+                    "no_code_required": no_code, "site_category": site_category,
+                    "hire_rate_penalty": False, "hired_percent": hired_percent,
+                    "breakdown": {},
+                }
+
         score = int(result.get("score", 0))
         is_ai_final = bool(result.get("is_ai", is_ai)) or is_ai
         reason = result.get("reason", "")
         breakdown = result.get("breakdown", {})
 
         scope_unclear = bool(scope_flags) or bool(open_flags) or bool(tech_flags)
+
+        # Штраф за низкий процент найма
+        hire_rate_penalty = False
+        if hired_percent is not None and hired_percent < 30:
+            old_score = score
+            score = max(0, score - 1)
+            hire_rate_penalty = True
+            penalty_note = f"штраф -1: hire_rate {hired_percent}%"
+            reason = f"{reason}; {penalty_note}" if reason else penalty_note
+            logger.info(
+                "HireRatePenalty [%s]: %d→%d (hire_rate=%d%%)",
+                title[:60], old_score, score, hired_percent,
+            )
 
         logger.info(
             "Score [%s]: %d (ai=%s, no_code=%s) — %s",
@@ -665,13 +727,16 @@ async def score_project(
             "scope_unclear": scope_unclear,
             "no_code_required": no_code,
             "site_category": site_category,
+            "hire_rate_penalty": hire_rate_penalty,
+            "hired_percent": hired_percent,
         }
     except Exception as exc:
         logger.warning("Scoring error for '%s': %s", title[:60], exc)
         return {
             "score": 5, "is_ai": is_ai, "reason": f"error: {exc}",
-            "hard_reject": False, "scope_unclear": False, "no_code_required": None, "site_category": "not_site",
+            "hard_reject": False, "scope_unclear": False, "no_code_required": None,
             "site_category": "not_site",
+            "hire_rate_penalty": False, "hired_percent": hired_percent,
             "breakdown": {},
         }
 

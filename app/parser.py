@@ -72,6 +72,7 @@ def _format_kwork_message(
     url: str,
     no_code_required: str | None,
     scope_unclear: bool,
+    is_quick_cash: bool = False,
 ) -> str:
     if respond:
         header = f"{'🔥' if score >= 9 else '✅'} РЕКОМЕНДУЮ ОТКЛИК — скор {score}/10"
@@ -87,6 +88,8 @@ def _format_kwork_message(
         badges.append(f"⛔ {no_code_required}")
     if scope_unclear:
         badges.append("⚠️ scope unclear")
+    if is_quick_cash:
+        badges.append("⚡ Быстрые деньги")
 
     badges_line = " ".join(badges)
     preview = html.quote(desc[:300]) + ("..." if len(desc) > 300 else "")
@@ -203,9 +206,34 @@ async def get_kwork_projects(bot: Bot, config: Settings):
     if not raw_projects["success"]:
         return await kwork.close()
 
+    def _extract_hired_percent(item: dict) -> int | None:
+        """Пытается вытащить процент найма заказчика из разных возможных полей Kwork API."""
+        user = item.get("user") or {}
+        candidates = [
+            item.get("user_hired_percent"),
+            item.get("hired_percent"),
+            item.get("customer_hired_percent"),
+            user.get("hired_percent") if isinstance(user, dict) else None,
+            user.get("hire_percent") if isinstance(user, dict) else None,
+        ]
+        for v in candidates:
+            if v is None:
+                continue
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    first_project_logged = False
+
     def get_project_data(response: list) -> list:
+        nonlocal first_project_logged
         result = []
         for item in response:
+            if not first_project_logged:
+                logger.info("DEBUG project sample: %s", item)
+                first_project_logged = True
             result.append(
                 {
                     "id": item.get("id"),
@@ -215,6 +243,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
                     "possible_price_limit": item.get("possible_price_limit"),
                     "offers": item.get("offers", 0),
                     "time_left": item.get("time_left", 0),
+                    "hired_percent": _extract_hired_percent(item),
                 }
             )
         return result
@@ -276,6 +305,8 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         time_left = project.get("time_left") or 0
         deadline_str = f"{time_left // 86400} дней" if time_left else "не указан"
 
+        hired_percent = project.get("hired_percent")
+
         score_result = await score_project(
             title=title,
             description=desc,
@@ -283,6 +314,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             deadline=deadline_str,
             responses_count=project.get("offers", 0),
             anthropic_api_key=config.anthropic_api_key,
+            hired_percent=hired_percent,
         )
 
         # Hard reject — тишина, только в логи
@@ -314,6 +346,23 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             no_code_required=score_result.get("no_code_required"),
         )
 
+        # ⚡ Быстрые деньги: верх бюджета 25-60k, срок ≤2 дней, скор ≥7,
+        # откликов <30 и это НЕ AI-задача.
+        offers_count = project.get("offers", 0) or 0
+        is_quick_cash = (
+            25000 <= price_limit <= 60000
+            and 0 < time_left <= 2 * 86400
+            and score_result["score"] >= 7
+            and offers_count < 30
+            and not score_result["is_ai"]
+        )
+        if is_quick_cash:
+            logger.info(
+                "QuickCash [%s]: limit=%d, time_left=%dh, offers=%d, score=%d",
+                title[:60], price_limit, time_left // 3600,
+                offers_count, score_result["score"],
+            )
+
         text = _format_kwork_message(
             title=title,
             desc=desc,
@@ -327,6 +376,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             url=kw_project_url,
             no_code_required=score_result.get("no_code_required"),
             scope_unclear=score_result.get("scope_unclear", False),
+            is_quick_cash=is_quick_cash,
         )
 
         if respond:
