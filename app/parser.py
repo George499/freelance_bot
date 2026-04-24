@@ -92,7 +92,7 @@ def _format_kwork_message(
         badges.append("⚡ Быстрые деньги")
 
     badges_line = " ".join(badges)
-    preview = html.quote(desc[:300]) + ("..." if len(desc) > 300 else "")
+    preview = html.quote(desc[:800]) + ("..." if len(desc) > 800 else "")
 
     return (
         f"{header}  {badges_line}\n\n"
