@@ -360,6 +360,84 @@ def _budget_too_low(wanted: int, limit: int, is_ai: bool) -> Optional[str]:
     return None
 
 
+# === Детектор несоответствия бюджета и скоупа ===
+
+# Ключевые слова масштабируемости (признак 3)
+_SCALE_KEYWORDS = re.compile(
+    r"масштабируем(ая|ой|ую)\s+архитектур"
+    r"|мультиязычност"
+    r"|multi[\s-]*language"
+    r"|\b50\s*[kк]\+?\s*(товар|product|sku)"
+    r"|мультибрендов"
+    r"|несколько\s+(стран|витрин|магазин|маркетплейс)"
+    r"|multi[\s-]*(brand|store|region|country)",
+    re.IGNORECASE,
+)
+
+# Крупные функциональные блоки (признак 1)
+_FUNC_BLOCK_KEYWORDS = re.compile(
+    r"\bпарсинг\b"
+    r"|\bseo\b|поисковая\s+оптимизац"
+    r"|мультиязычност|multi[\s-]*lang"
+    r"|\bадминк[аеу]\b|\bадмин[\s-]*панел"
+    r"|\bкаталог\b|\bкаталог(а|е|и)?\b"
+    r"|\bинтеграци(я|и|й)\b"
+    r"|\bвитрин(а|ы|е)\b"
+    r"|\bлич(ный|ный|ном)\s+кабинет"
+    r"|\bоплат(а|ы|е)\b|\bэквайринг\b"
+    r"|\bуведомлени(я|й|е)\b"
+    r"|\bаналитик(а|е|и)\b|\bдашборд\b"
+    r"|\bпоиск\b.*\bфильтр|\bфильтр\b.*\bпоиск"
+    r"|\bapi[\s-]*интеграци|\bсторонн\w+\s+api"
+    r"|\bотзыв(ы|ов)?\b|\bрейтинг\b"
+    r"|\bрегистраци(я|и)\b|\bавториза",
+    re.IGNORECASE,
+)
+
+
+def detect_budget_scope_mismatch(
+    title: str,
+    description: str,
+    budget_limit: int,
+) -> tuple[int, str]:
+    """
+    Детектирует несоответствие масштаба задачи и бюджета.
+
+    Признаки:
+      1. >5 крупных функциональных блоков в описании
+      2. Верхняя граница бюджета < 150 000 ₽
+      3. Ключевые слова масштабируемости
+
+    При 2+ совпадениях → штраф -2.
+
+    Returns:
+        (penalty, reason) — penalty = 0 или -2.
+    """
+    text = f"{title}\n{description}"
+    matched = []
+
+    # Признак 1: >5 функциональных блоков
+    blocks = [m.group(0).lower().strip() for m in _FUNC_BLOCK_KEYWORDS.finditer(text)]
+    block_count = len(set(blocks))
+    if block_count > 5:
+        matched.append(f"функц.блоков={block_count}")
+
+    # Признак 2: бюджет < 150к
+    if 0 < budget_limit < 150_000:
+        matched.append(f"бюджет {budget_limit:,}<150к")
+
+    # Признак 3: ключевые слова масштабируемости
+    scale_match = _SCALE_KEYWORDS.search(text)
+    if scale_match:
+        matched.append(f"масштаб: '{scale_match.group(0)}'")
+
+    if len(matched) >= 2:
+        reason = "BudgetScopeMismatch: " + "; ".join(matched)
+        return -2, reason
+
+    return 0, ""
+
+
 # === quota_status для rolling-периода Kwork ===
 
 def quota_status(
@@ -735,6 +813,17 @@ async def score_project(
             logger.info(
                 "HireRatePenalty [%s]: %d→%d (hire_rate=%d%%)",
                 title[:60], old_score, score, hired_percent,
+            )
+
+        # Штраф за несоответствие бюджета и скоупа
+        bsm_penalty, bsm_reason = detect_budget_scope_mismatch(title, description, limit or wanted)
+        if bsm_penalty:
+            old_score = score
+            score = max(0, score + bsm_penalty)
+            reason = f"{reason}; {bsm_reason}" if reason else bsm_reason
+            logger.info(
+                "BudgetScopeMismatch [%s]: %d→%d — %s",
+                title[:60], old_score, score, bsm_reason,
             )
 
         logger.info(
