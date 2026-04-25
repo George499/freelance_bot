@@ -111,8 +111,48 @@ NO_CODE_PLATFORM_KEYWORDS = (
     r"\bbubble\.io\b", r"\bна\s+bubble\b",
     r"airtable\s+automation",
     r"\bretool\b",
+    # P0.3: явные no-code формулировки
+    r"\bno[\s-]?code\b", r"\blow[\s-]?code\b",
+    r"\bноу[\s-]?код\b", r"\bлоу[\s-]?код\b",
+    r"без\s+написания\s+кода",
+    r"без\s+программирования",
+    r"визуальн\w+\s+конструктор",
+    r"автоматизаци\w+\s+на\s+(make|n8n|zapier)",
 )
 _NO_CODE_RE = re.compile("|".join(NO_CODE_PLATFORM_KEYWORDS), re.IGNORECASE)
+
+# P0.3 edge case: миграция С no-code НА код — НЕ hard-reject, нормальный скоринг
+# Явный сигнал миграции (один из этих паттернов достаточно)
+NO_CODE_MIGRATION_FLAGS = (
+    r"перепис(ать|ыва|али)",
+    r"переехать", r"переезжае?м", r"переезд\s+с",
+    r"уйти\s+от", r"уход\s+от", r"уходим?\s+от",
+    r"отказ\w+\s+от\s+(no[\s-]?code|n8n|make|zapier|bubble|retool)",
+    r"заменить\s+(n8n|make|zapier|bubble)",
+    r"вместо\s+(n8n|make|zapier|bubble)",
+    r"мигрир\w+\s+с",
+    r"переход\s+(с|от)\s+(no[\s-]?code|n8n|make|zapier)",
+    r"раньше\s+(был[оа]?|работал[оа]?)\s+на\s+(n8n|make|zapier)",
+    r"написать\s+(заново|с\s+нуля)\s+на\s+(python|nest|next|node)",
+)
+_NO_CODE_MIGRATION_RE = re.compile("|".join(NO_CODE_MIGRATION_FLAGS), re.IGNORECASE)
+
+# Текущее состояние на no-code (нужен parner-сигнал — цель на коде)
+NO_CODE_CURRENT_STATE_FLAGS = (
+    r"использу\w+\s+(n8n|make|zapier|bubble)",
+    r"работает\s+на\s+(n8n|make|zapier|bubble)",
+    r"сейчас\s+(на\s+|использу\w+\s+|работае?т\s+на\s+)?(n8n|make|zapier|bubble)",
+    r"уже\s+(есть|сделан\w*|настроен\w*)\s+(на\s+)?(n8n|make|zapier|bubble)",
+)
+_NO_CODE_CURRENT_RE = re.compile("|".join(NO_CODE_CURRENT_STATE_FLAGS), re.IGNORECASE)
+
+# Цель миграции — новый сервис на коде
+CODE_TARGET_FLAGS = (
+    r"новый\s+(сервис|проект|бэкенд|фронт|систем\w*|сайт|приложен\w*)\s+на\s+(python|nest|next|node|django|fastapi|typescript|nestjs|nextjs|go\b)",
+    r"нужен\s+(сервис|проект|бэкенд|сайт|систем\w*)\s+на\s+(python|nest|next|node|nestjs|nextjs|django|fastapi)",
+    r"переписать\s+на\s+(python|nest|next|node)",
+)
+_CODE_TARGET_RE = re.compile("|".join(CODE_TARGET_FLAGS), re.IGNORECASE)
 
 SCOPE_RED_FLAGS = (
     r"универсальн(ый|ая|ое)\s+(агент|систем|решени|бот)",
@@ -257,6 +297,109 @@ def detect_site_category(title: str, description: str) -> tuple[str, str]:
 
     return "ambiguous", "про сайт, но категория не определена"
 
+
+# === P1.2: инфобиз / AI-агентство — универсальный hard-reject (даже для AI-заказов) ===
+# Применяется отдельно от HARD_REJECT_KEYWORDS, который AI-заказы пропускает.
+ALWAYS_HARD_REJECT_KEYWORDS = (
+    r"\bинфобиз",
+    r"\bинфопродукт",
+    r"автоматизаци\w+\s+инфо\w+",
+    r"\bии[\s-]*агентств",
+    r"\bai[\s-]*агентств",
+    r"\bии[\s-]*сотрудник",
+    r"\bai[\s-]*сотрудник",
+    r"автоматизировать\s+вс[её]\s+(с\s+помощью\s+)?(ии|ai|нейросет)",
+    r"полная\s+автоматизация\s+бизнеса",
+)
+_ALWAYS_HARD_REJECT_RE = re.compile("|".join(ALWAYS_HARD_REJECT_KEYWORDS), re.IGNORECASE)
+
+
+# === P1.1: лендинги для B2C-услуг — Tilda-территория ===
+LANDING_KEYWORDS = (
+    r"\bлендинг", r"\blanding\b", r"\bпосадочн",
+    r"\bодностраничн", r"\bодностраничник",
+    r"сайт[\s-]?визитк",
+    r"продающ\w+\s+(сайт|landing|лендинг)",
+    r"landing[\s-]?page",
+)
+_LANDING_RE = re.compile("|".join(LANDING_KEYWORDS), re.IGNORECASE)
+
+B2C_SERVICE_NICHES = (
+    r"\bтренер", r"\bфитнес", r"\bйога",
+    r"\bпсихолог", r"\bкоуч\b", r"\bнаставник",
+    r"\bюрист\b", r"\bадвокат", r"\bнотариус",
+    r"\bдезинфек", r"\bуборк", r"\bклининг",
+    r"мастер\s+маникюра", r"мастер\s+педикюра", r"мастер\s+бровей",
+    r"\bпарикмахер", r"\bвизажист", r"\bстилист\b",
+    r"\bстоматолог", r"\bмассажист", r"\bостеопат",
+    r"\bрепетитор", r"\bучитель\b",
+    r"\bфлорист", r"\bкондитер", r"\bбариста",
+    r"\bавтосервис", r"ремонт\s+авто",
+    r"\bнутрициолог", r"\bдиетолог",
+    r"\bастролог", r"\bтаролог",
+    r"\bсалон\s+красот",
+)
+_B2C_NICHES_RE = re.compile("|".join(B2C_SERVICE_NICHES), re.IGNORECASE)
+
+
+# === P1.3: внешние API с барьером входа (TikTok / Instagram / WhatsApp / LinkedIn) ===
+EXTERNAL_API_BARRIER_FLAGS = (
+    r"tiktok\s+(business\s+)?(api|для\s+разработ)",
+    r"tiktok\s+for\s+developers",
+    r"instagram\s+(graph|business)\s+api",
+    r"whatsapp\s+(business\s+)?(cloud\s+)?api",
+    r"linkedin\s+(marketing|sales\s+navigator)\s+api",
+    r"подключить\s+(tiktok|instagram|whatsapp|linkedin)\s+api",
+    r"api\s+соц[\s-]?сет\w+\s+(для|чтобы|с\s+цель)",
+)
+_EXTERNAL_API_RE = re.compile("|".join(EXTERNAL_API_BARRIER_FLAGS), re.IGNORECASE)
+
+EXTERNAL_API_APPROVED_FLAGS = (
+    r"уже\s+(есть|одобрен\w*)\s+(api|приложен|ключ|access)",
+    r"у\s+нас\s+есть\s+(api|приложен|access\s+token|ключ)",
+    r"одобренное\s+приложен",
+    r"api[\s-]?ключ\s+(уже\s+)?(есть|получ)",
+    r"наше\s+приложение\s+уже",
+    r"мы\s+уже\s+зарегистрир",
+)
+_EXTERNAL_API_OK_RE = re.compile("|".join(EXTERNAL_API_APPROVED_FLAGS), re.IGNORECASE)
+
+
+# === P1.4: парсинг чужих коммерческих источников для построения каталога ===
+COMMERCIAL_PARSING_FLAGS = (
+    r"парс\w+\s+\d+\s*[-—]?\s*\d*\s+(сайт|источник|маркетплейс|конкурент|производит)",
+    r"сбор\s+данных\s+с\s+\d+\s+(сайт|источник|маркетплейс)",
+    r"парс\w+\s+(getcourse|skillbox|skill[\s-]?factory|нетолог|синергия|geekbrains)",
+    r"(собрать|построить)\s+(собственн\w+\s+)?каталог.*?(парс|спарс)",
+    r"спарсить.*?(собрать|построить).*(каталог|витрин|маркетплейс)",
+    r"парс\w+.*?конкурент.*?(собрать|построить|витрин|каталог)",
+)
+_COMMERCIAL_PARSING_RE = re.compile("|".join(COMMERCIAL_PARSING_FLAGS), re.IGNORECASE)
+
+PARSING_WHITELIST_FLAGS = (
+    r"\bhh\.ru\b|хэдхантер|headhunter",
+    r"\bгосуслуг|\.gov\.ru|\bросстат",
+    r"открытые\s+данные",
+    r"для\s+(собственн|нашего|своего)\s+(магазин|анализ|мониторинг|сайт)",
+    r"для\s+(внутренн|собственн)\w*\s+аналитик",
+    r"мониторинг\s+цен\s+конкурент",
+    r"новостн\w+\s+(агрегат|парс)",
+)
+_PARSING_OK_RE = re.compile("|".join(PARSING_WHITELIST_FLAGS), re.IGNORECASE)
+
+
+# === P2.5: НКО / благотворительные фонды — caution-флаг ===
+NKO_KEYWORDS = (
+    r"благотворительн\w+\s+фонд",
+    r"\bнко\b", r"некоммерческ\w+\s+организаци",
+    r"социальн\w+\s+проект",
+    r"волонт[её]рск",
+    r"общественн\w+\s+организаци",
+    r"\bфонд\s+помощи",
+)
+_NKO_RE = re.compile("|".join(NKO_KEYWORDS), re.IGNORECASE)
+
+
 HARD_REJECT_KEYWORDS = (
     r"\b1c[\s-]*битрикс\b", r"\bбитрикс\b", r"\bbitrix\b",
     r"\bwordpress\b", r"\bвордпресс\b", r"\bна\s+wp\b",
@@ -296,8 +439,86 @@ def _hard_reject_reason(title: str, description: str) -> Optional[str]:
 
 
 def detect_no_code_required(title: str, description: str) -> Optional[str]:
-    match = _NO_CODE_RE.search(f"{title}\n{description}")
+    """
+    Возвращает совпавший no-code маркер если задача требует no-code инструмент.
+    Edge case (P0.3): если в тексте есть фразы миграции С no-code НА код —
+    возвращает None, заказ обрабатывается обычным скорингом.
+    Миграция засчитывается если:
+      (a) явный migration-глагол (переписать, переехать, уйти от и т.п.), ИЛИ
+      (b) комбинация (текущее состояние на no-code) + (новая цель на коде).
+    """
+    text = f"{title}\n{description}"
+    match = _NO_CODE_RE.search(text)
+    if not match:
+        return None
+    if _NO_CODE_MIGRATION_RE.search(text):
+        return None
+    if _NO_CODE_CURRENT_RE.search(text) and _CODE_TARGET_RE.search(text):
+        return None
+    return match.group(0)
+
+
+def detect_always_hard_reject(title: str, description: str) -> Optional[str]:
+    """P1.2: инфобиз / ИИ-агентство — отклоняем независимо от AI-флага."""
+    match = _ALWAYS_HARD_REJECT_RE.search(f"{title}\n{description}")
     return match.group(0) if match else None
+
+
+def detect_landing_reject(title: str, description: str, budget_limit: int) -> Optional[str]:
+    """
+    P1.1: hard-reject лендингов / одностраничников.
+
+    Условия:
+      1. landing keyword + B2C-ниша → reject независимо от бюджета.
+      2. landing keyword + budget_max < 80 000 ₽ → reject (Tilda-территория).
+    """
+    text = f"{title}\n{description}"
+    if not _LANDING_RE.search(text):
+        return None
+
+    niche_match = _B2C_NICHES_RE.search(text)
+    if niche_match:
+        return f"лендинг для B2C-ниши '{niche_match.group(0)}' — Tilda-территория"
+
+    if 0 < budget_limit < 80_000:
+        return f"лендинг с бюджетом {budget_limit:,} ₽ < 80 000 ₽ — Tilda-территория"
+
+    return None
+
+
+def detect_external_api_barrier(title: str, description: str) -> tuple[int, str]:
+    """
+    P1.3: штраф -1 за API соцсетей с долгим одобрением (TikTok / Instagram Graph /
+    WhatsApp Business / LinkedIn Marketing). Если приложение УЖЕ одобрено —
+    штраф не применяется.
+    """
+    text = f"{title}\n{description}"
+    match = _EXTERNAL_API_RE.search(text)
+    if not match:
+        return 0, ""
+    if _EXTERNAL_API_OK_RE.search(text):
+        return 0, ""
+    return -1, f"API с барьером входа: '{match.group(0)}'"
+
+
+def detect_commercial_parsing(title: str, description: str) -> tuple[int, str]:
+    """
+    P1.4: штраф -1 за парсинг чужих коммерческих источников для построения
+    собственного каталога / витрины. Whitelist: HH, госсайты, новости,
+    парсинг для внутренней аналитики / собственного магазина.
+    """
+    text = f"{title}\n{description}"
+    match = _COMMERCIAL_PARSING_RE.search(text)
+    if not match:
+        return 0, ""
+    if _PARSING_OK_RE.search(text):
+        return 0, ""
+    return -1, f"парсинг чужих коммерческих источников: '{match.group(0).strip()}'"
+
+
+def detect_nko_caution(title: str, description: str) -> bool:
+    """P2.5: флаг для Haiku — НКО / благотворительный фонд, осторожность."""
+    return bool(_NKO_RE.search(f"{title}\n{description}"))
 
 
 def _flatten(matches: list) -> list:
@@ -514,23 +735,53 @@ PRE-CHECK:
 - Open-ended: {open_ended_flags} (penalty {open_ended_penalty})
 - Tech incompetence: {tech_flags} (penalty {tech_penalty})
 - Категория сайта/лендинга: {site_category} ({site_note})
+- API соцсетей с барьером входа: {api_barrier} (penalty {api_barrier_penalty})
+- Парсинг чужих коммерческих источников: {parsing_flag} (penalty {parsing_penalty})
+- НКО / благотворительный фонд: {nko_caution}
 ===
 
 Оцени 1-10. Не "подходит технически", а "стоит ли тратить один из 30 патронов".
 
 ЖЁСТКИЕ ПРАВИЛА:
-A. No-code требуется (n8n/Make/Zapier) → скор НЕ ВЫШЕ 4.
+A. No-code требуется (n8n/Make/Zapier/no-code/без кода) → скор НЕ ВЫШЕ 4.
+   В обычном случае такие заказы уже отсеяны до Haiku; правило применяется
+   только к edge-case "переписываем С n8n/Make НА код".
 B. Open-ended scope + бюджет <150к → скор НЕ ВЫШЕ 5.
 C. Tech incompetence + серьёзная задача → скор НЕ ВЫШЕ 5.
 D. Все penalty складываются.
-E. site_category == "turnkey" (сайт под ключ без макета) — это УТП разработчика,
-   добавить +2 к базовому скору. Он умеет дизайн через Claude Design и сразу в код.
-F. site_category == "ambiguous" — неясно есть ли макет. Если в описании НЕТ явного упоминания
-   Figma/PSD/макета — считать как turnkey (+1 бонус). Если есть намёки на готовый дизайн — как есть.
+E. site_category == "turnkey":
+   - Если задача — сложный продукт (бот, парсер, API, SaaS, MVP, дашборд,
+     личный кабинет, бизнес-приложение с нетривиальной логикой) — +2 к скору (УТП).
+   - Если задача — лендинг / сайт-визитка / одностраничник для услуг — БЕЗ бонуса.
+     Опасные landing-кейсы B2C уже отсеяны в python-фильтре, остаётся серая зона.
+F. site_category == "ambiguous" — нейтрально, БЕЗ авто-бонуса. НЕ достраивать
+   "макета не упомянули → значит turnkey": ждём явных признаков.
 G. "CMS" или "админ-панель для управления контентом/товарами" сами по себе НЕ являются
    пенальти — разработчик делает кастомную админку на NestJS/PostgreSQL. Пенальти и
    hard reject только если заказчик явно называет платформу: WordPress, Bitrix, Tilda,
    OpenCart, Shopify, Joomla, Wix.
+H. AI-маркетинговый клиент vs AI-инженерный — критично.
+   ШТРАФ -2 к БАЗОВОМУ скору если признаки AI-маркетинга:
+   - "сетка агентов / ассистентов" в маркетинговом контексте
+   - "ИИ-сотрудник", "ИИ-помощник заменит отдел"
+   - "автоматизировать всё с помощью AI"
+   - "познакомить агентов с источниками", "обучить нейросеть на наших данных"
+     при отсутствии конкретики по архитектуре
+   - размытые модные термины без технического понимания
+   БЕЗ штрафа (иногда +1) если признаки AI-инженерии:
+   - конкретные термины: function calling, RAG, vector search, embedding,
+     fine-tuning, system prompt, tool use
+   - понимание ограничений: rate limits, context window, токены, latency
+   - конкретный API: Claude Sonnet 4, GPT-4o, Whisper, Anthropic
+   - технический стек рядом: NestJS + Postgres + pgvector
+   ВАЖНО: "сетка телеграм-ботов для автопостинга" — это НЕ AI-маркетинг,
+   это просто несколько ботов, обычная задача, без штрафа.
+I. nko_caution=да — НЕ штрафовать автоматически, но проверить:
+   - Если требуется бесплатная / льготная разработка / "за идею" → штраф -2.
+   - Если бюджет заметно ниже скоупа (НКО часто грантовые) → флаг в reason
+     "nko_caution: уточнить условия".
+   В reason обязательно упомянуть "nko_caution" чтобы я уточнил условия в первом
+   сообщении.
 
 БАЗОВЫЙ СКОР:
 
@@ -668,6 +919,32 @@ async def score_project(
 
     is_ai = _has_ai_priority(title, description)
 
+    # P1.2: универсальный hard-reject (инфобиз / AI-агентство) — даже для AI-заказов
+    always_hr = detect_always_hard_reject(title, description)
+    if always_hr:
+        logger.info("AlwaysHardReject [%s]: %s", title[:60], always_hr)
+        return {
+            "score": 0, "is_ai": is_ai,
+            "reason": f"infobiz/AI-агентство: '{always_hr}'",
+            "hard_reject": True, "scope_unclear": False, "no_code_required": None,
+            "site_category": "not_site",
+            "hire_rate_penalty": False, "hired_percent": hired_percent,
+            "breakdown": {},
+        }
+
+    # P0.3: no-code hard-reject (detect_no_code_required учитывает edge-case миграции)
+    no_code_hard = detect_no_code_required(title, description)
+    if no_code_hard:
+        logger.info("NoCodeHardReject [%s]: %s", title[:60], no_code_hard)
+        return {
+            "score": 0, "is_ai": is_ai,
+            "reason": f"требуется no-code: '{no_code_hard}'",
+            "hard_reject": True, "scope_unclear": False,
+            "no_code_required": no_code_hard, "site_category": "not_site",
+            "hire_rate_penalty": False, "hired_percent": hired_percent,
+            "breakdown": {},
+        }
+
     if not is_ai:
         hr = _hard_reject_reason(title, description)
         if hr:
@@ -716,13 +993,30 @@ async def score_project(
             return {
                 "score": 0, "is_ai": is_ai, "reason": reason,
                 "hard_reject": True, "scope_unclear": False, "no_code_required": None,
-                "site_category": site_category, "breakdown": {},
+                "site_category": site_category,
+                "hire_rate_penalty": False, "hired_percent": hired_percent,
+                "breakdown": {},
             }
+
+    # P1.1: hard-reject лендингов B2C / лендингов с бюджетом < 80к
+    landing_reason = detect_landing_reject(title, description, limit or wanted)
+    if landing_reason:
+        logger.info("LandingReject [%s]: %s", title[:60], landing_reason)
+        return {
+            "score": 0, "is_ai": is_ai, "reason": landing_reason,
+            "hard_reject": True, "scope_unclear": False, "no_code_required": None,
+            "site_category": site_category,
+            "hire_rate_penalty": False, "hired_percent": hired_percent,
+            "breakdown": {},
+        }
 
     no_code = detect_no_code_required(title, description)
     scope_pen, scope_flags = detect_scope_red_flags(title, description)
     open_pen, open_flags = detect_open_ended_scope(title, description)
     tech_pen, tech_flags = detect_tech_incompetence(title, description)
+    api_barrier_pen, api_barrier_reason = detect_external_api_barrier(title, description)
+    parsing_pen, parsing_reason = detect_commercial_parsing(title, description)
+    nko_caution = detect_nko_caution(title, description)
 
     no_code_note = f"({no_code}) — cap 4" if no_code else ""
 
@@ -743,6 +1037,11 @@ async def score_project(
         tech_penalty=tech_pen,
         site_category=site_category,
         site_note=site_note if site_note else "нет",
+        api_barrier=api_barrier_reason or "нет",
+        api_barrier_penalty=api_barrier_pen,
+        parsing_flag=parsing_reason or "нет",
+        parsing_penalty=parsing_pen,
+        nko_caution="да" if nko_caution else "нет",
     )
 
     try:
@@ -824,6 +1123,26 @@ async def score_project(
             logger.info(
                 "BudgetScopeMismatch [%s]: %d→%d — %s",
                 title[:60], old_score, score, bsm_reason,
+            )
+
+        # P1.3: штраф за API соцсетей с барьером входа
+        if api_barrier_pen:
+            old_score = score
+            score = max(0, score + api_barrier_pen)
+            reason = f"{reason}; {api_barrier_reason}" if reason else api_barrier_reason
+            logger.info(
+                "APIBarrier [%s]: %d→%d — %s",
+                title[:60], old_score, score, api_barrier_reason,
+            )
+
+        # P1.4: штраф за парсинг чужих коммерческих источников
+        if parsing_pen:
+            old_score = score
+            score = max(0, score + parsing_pen)
+            reason = f"{reason}; {parsing_reason}" if reason else parsing_reason
+            logger.info(
+                "CommercialParsing [%s]: %d→%d — %s",
+                title[:60], old_score, score, parsing_reason,
             )
 
         logger.info(
