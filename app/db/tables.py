@@ -1,9 +1,10 @@
 import random
 import string
+from datetime import datetime
 from enum import Enum
 from typing import List
 
-from piccolo.columns import BigInt, ForeignKey, Text, Varchar
+from piccolo.columns import BigInt, ForeignKey, Text, Timestamp, Varchar
 from piccolo.columns.readable import Readable
 from piccolo.table import Table
 
@@ -25,6 +26,7 @@ class Project(Table, db=DB):
     title = Varchar(required=True)
     description = Text(required=True)
     freelance_platform = Varchar(choices=FreelancePlatform, required=True)
+    first_seen_at = Timestamp(default=datetime.now)
 
 
 class PremiumUser(Table, db=DB):

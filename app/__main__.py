@@ -21,6 +21,33 @@ from app.parser import get_kwork_projects, get_upwork_projects
 from app.web.routes import create_offer, get_offers, home
 from app.bot.quota_handlers import quota_router
 
+def _migrate_sqlite_columns() -> None:
+    """
+    Idempotent миграция SQLite: добавляет колонки введённые после первичной схемы.
+    Запускается на каждом старте; для уже существующих колонок — no-op.
+    """
+    import os
+    import sqlite3
+
+    db_file = os.path.join("app", "db", "database", "projects.db")
+    if not os.path.exists(db_file):
+        return
+
+    conn = sqlite3.connect(db_file)
+    try:
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(project)")
+        cols = {row[1] for row in cur.fetchall()}
+        if "first_seen_at" not in cols:
+            cur.execute("ALTER TABLE project ADD COLUMN first_seen_at TIMESTAMP")
+            conn.commit()
+            logging.getLogger(__name__).info(
+                "DB migration: added project.first_seen_at"
+            )
+    finally:
+        conn.close()
+
+
 async def database_connection(config: Settings, close=False, persist=True) -> None:
     db = engine_finder(config.piccolo_conf)
 
@@ -34,6 +61,8 @@ async def database_connection(config: Settings, close=False, persist=True) -> No
 
         for table in PROJECT_TABLES:
             await table.create_table(if_not_exists=True)
+
+        _migrate_sqlite_columns()
     else:
         if close:
             return await db.close_connection_pool()

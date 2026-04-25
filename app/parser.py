@@ -30,6 +30,31 @@ logger = logging.getLogger(__name__)
 # ≤4 — полное игнорирование, молчим.
 TELEGRAM_SCORE_THRESHOLD = 5
 
+# P2.3 (вариант A): freshness-бейдж через прокси time_left + offers
+# (Kwork API не отдаёт published_at). Чем больше откликов / меньше времени до
+# закрытия приёма — тем ниже шанс что заказчик вообще прочитает наш отклик.
+FRESH_OFFERS_MAX = 10
+FRESH_TIME_LEFT_MIN_SEC = 2 * 86400      # ≥ 2 дня — заказ скорее всего свежий
+LATE_OFFERS_MIN = 30
+LATE_TIME_LEFT_MAX_SEC = 12 * 3600       # < 12 ч — приём почти закрыт
+LOW_QUOTA_THRESHOLD = 5                  # при ≤5 оставшихся квот не тратимся на 🔴
+
+
+def _freshness_badge(time_left_sec: int, offers_count: int) -> tuple[str, str]:
+    """Возвращает (эмодзи, читаемый лейбл) для freshness."""
+    is_late = offers_count >= LATE_OFFERS_MIN or (
+        0 < time_left_sec < LATE_TIME_LEFT_MAX_SEC
+    )
+    if is_late:
+        return "🔴", "поздно (много откликов / скоро закроется приём)"
+    is_fresh = (
+        offers_count < FRESH_OFFERS_MAX
+        and time_left_sec >= FRESH_TIME_LEFT_MIN_SEC
+    )
+    if is_fresh:
+        return "🟢", "свежий"
+    return "🟡", "средний"
+
 UPWORK_TEMPLATE = (
     "☘️ <b>{title}</b>\n\n"
     "<i>{description}</i>\n\n"
@@ -77,6 +102,8 @@ def _format_kwork_message(
     scope_unclear: bool,
     critical_unknowns: list[str] | None = None,
     is_quick_cash: bool = False,
+    freshness_emoji: str = "",
+    freshness_label: str = "",
 ) -> str:
     unknowns = critical_unknowns or []
     is_quali = len(unknowns) >= QUALI_UNKNOWNS_THRESHOLD
@@ -98,6 +125,8 @@ def _format_kwork_message(
         header = f"🔴 Пропуск — скор {score}/10"
 
     badges = []
+    if freshness_emoji:
+        badges.append(f"{freshness_emoji} {freshness_label}")
     if is_ai:
         badges.append("🤖 AI")
     if no_code_required:
@@ -367,9 +396,26 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             no_code_required=score_result.get("no_code_required"),
         )
 
+        offers_count = project.get("offers", 0) or 0
+        freshness_emoji, freshness_label = _freshness_badge(time_left, offers_count)
+
+        # P2.3: при низкой квоте не тратим патрон на 🔴 заказы (downgrade в borderline)
+        if (
+            respond
+            and freshness_emoji == "🔴"
+            and quota["remaining"] <= LOW_QUOTA_THRESHOLD
+        ):
+            logger.info(
+                "LowQuotaSkip [%s]: квота=%d, freshness=🔴 — downgrade в borderline",
+                title[:60], quota["remaining"],
+            )
+            respond = False
+            decision_reason = (
+                f"низкая квота ({quota['remaining']}) + поздний заказ — не тратим патрон"
+            )
+
         # ⚡ Быстрые деньги: верх бюджета 25-60k, срок ≤2 дней, скор ≥7,
         # откликов <30 и это НЕ AI-задача.
-        offers_count = project.get("offers", 0) or 0
         is_quick_cash = (
             25000 <= price_limit <= 60000
             and 0 < time_left <= 2 * 86400
@@ -399,6 +445,8 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             scope_unclear=score_result.get("scope_unclear", False),
             critical_unknowns=score_result.get("critical_unknowns") or [],
             is_quick_cash=is_quick_cash,
+            freshness_emoji=freshness_emoji,
+            freshness_label=freshness_label,
         )
 
         if respond:
