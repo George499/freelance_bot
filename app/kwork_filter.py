@@ -433,6 +433,23 @@ VAGUE_DEADLINE_FLAGS = (
 )
 _VAGUE_DEADLINE_RE = re.compile("|".join(VAGUE_DEADLINE_FLAGS), re.IGNORECASE)
 
+# P2.2 (минимум): ТЗ / детали во вложении — kwork-library не отдаёт attachments,
+# поэтому ловим только текстовые намёки. Поднимает QUALI-флаг и сигналит что
+# скоринг неполный — нужно открыть страницу заказа и прочитать вложение вручную.
+ATTACHMENT_HINT_FLAGS = (
+    r"\b(тз|техзадани\w+|задани\w+|описани\w+|подробн\w+|детал\w+)\s+(во?|на)\s+(вложен|файл\w*|pdf|docx?|word|архив|документ)",
+    r"\bво?\s+вложени(и|е|ях)\b",
+    r"\bсм\.?\s*(во\s+)?вложен",
+    r"\bсмотри(те)?\s+(во\s+)?вложен",
+    r"\b(прикреп\w+|прилож\w+|вложил\w*|приклад\w+)\s+(файл|архив|документ|тз|техзадани|pdf|docx?|word|excel|материал)",
+    r"\bфайл\s+с\s+(тз|техзадани|описани|задани|подробн)",
+    r"\b(тз|техзадани\w+|задани\w+)\s+(в\s+)?(pdf|docx?|word|excel)",
+    r"\bархив\s+с\s+(тз|материал|примерами|задани|документ)",
+    r"\bскача(й|йте|ть)\s+(тз|файл|архив|документ)",
+    r"\b(подробн\w+\s+тз|полное\s+тз)\s+(в\s+|во\s+)?(файл|вложен|pdf|docx?|документ|архив)",
+)
+_ATTACHMENT_HINT_RE = re.compile("|".join(ATTACHMENT_HINT_FLAGS), re.IGNORECASE)
+
 
 HARD_REJECT_KEYWORDS = (
     r"\b1c[\s-]*битрикс\b", r"\bбитрикс\b", r"\bbitrix\b",
@@ -587,6 +604,15 @@ def detect_tech_incompetence(title: str, description: str) -> tuple[int, list]:
     return (-2, unique) if unique else (0, [])
 
 
+def detect_attachment_hint(title: str, description: str) -> bool:
+    """
+    P2.2 (минимум): по тексту определяем есть ли вложение с ТЗ / деталями.
+    kwork-library не отдаёт реальный список attachments, поэтому ловим
+    только текстовые намёки ("ТЗ во вложении", "прикреплён файл" и т.п.).
+    """
+    return bool(_ATTACHMENT_HINT_RE.search(f"{title}\n{description}"))
+
+
 def detect_critical_unknowns(
     title: str,
     description: str,
@@ -623,6 +649,9 @@ def detect_critical_unknowns(
 
     if _VAGUE_DEADLINE_RE.search(text):
         unknowns.append("срок исполнения не указан")
+
+    if detect_attachment_hint(title, description):
+        unknowns.append("ТЗ во вложении (бот не разбирает)")
 
     return unknowns
 
