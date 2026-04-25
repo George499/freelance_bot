@@ -59,6 +59,9 @@ def _kwork_action_keyboard(project_id: int, project_url: str) -> InlineKeyboardM
     )
 
 
+QUALI_UNKNOWNS_THRESHOLD = 2
+
+
 def _format_kwork_message(
     title: str,
     desc: str,
@@ -72,14 +75,27 @@ def _format_kwork_message(
     url: str,
     no_code_required: str | None,
     scope_unclear: bool,
+    critical_unknowns: list[str] | None = None,
     is_quick_cash: bool = False,
 ) -> str:
+    unknowns = critical_unknowns or []
+    is_quali = len(unknowns) >= QUALI_UNKNOWNS_THRESHOLD
+
+    # P2.4: GO / QUALI / Пограничный / Пропуск роутинг
     if respond:
-        header = f"{'🔥' if score >= 9 else '✅'} РЕКОМЕНДУЮ ОТКЛИК — скор {score}/10"
+        if is_quali:
+            header = f"🟡 QUALI — скор {score}/10 (ответить, но сначала уточнить)"
+        elif score >= 9:
+            header = f"🔥 GO — скор {score}/10"
+        else:
+            header = f"🟢 GO — скор {score}/10"
     elif score >= TELEGRAM_SCORE_THRESHOLD:
-        header = f"👀 Пограничный — скор {score}/10 (ждём лучшего)"
+        if is_quali:
+            header = f"🟡 QUALI — скор {score}/10 (пограничный + 2+ неизвестных)"
+        else:
+            header = f"👀 Пограничный — скор {score}/10 (ждём лучшего)"
     else:
-        header = f"Пропуск — скор {score}/10"
+        header = f"🔴 Пропуск — скор {score}/10"
 
     badges = []
     if is_ai:
@@ -94,11 +110,16 @@ def _format_kwork_message(
     badges_line = " ".join(badges)
     preview = html.quote(desc[:800]) + ("..." if len(desc) > 800 else "")
 
+    unknowns_block = ""
+    if unknowns:
+        unknowns_block = "❓ Неизвестные: " + html.quote("; ".join(unknowns)) + "\n\n"
+
     return (
         f"{header}  {badges_line}\n\n"
         f"<b>{html.quote(title)}</b>\n\n"
         f"💰 {budget_str}\n"
         f"{preview}\n\n"
+        f"{unknowns_block}"
         f"Решение: {html.quote(decision_reason)}\n"
         f"Причина скора: {html.quote(score_reason)}\n\n"
         f"📊 Квота: {quota['remaining']}/{MONTHLY_QUOTA} осталось, "
@@ -376,6 +397,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             url=kw_project_url,
             no_code_required=score_result.get("no_code_required"),
             scope_unclear=score_result.get("scope_unclear", False),
+            critical_unknowns=score_result.get("critical_unknowns") or [],
             is_quick_cash=is_quick_cash,
         )
 

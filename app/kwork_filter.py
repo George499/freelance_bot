@@ -400,6 +400,40 @@ NKO_KEYWORDS = (
 _NKO_RE = re.compile("|".join(NKO_KEYWORDS), re.IGNORECASE)
 
 
+# === P2.4: критичные неизвестные для GO/QUALI/SKIP роутинга ===
+# Размытый бюджет (текстовые маркеры, дополнительно к price=0/limit=0)
+VAGUE_BUDGET_FLAGS = (
+    r"договорн\w+\s+(бюджет|оплат|цен)",
+    r"бюджет\s+(договорн|обсуждаем|уточн|определим|после|зависит)",
+    r"пишите\s+(свои\s+)?(цен|предложен|стоимост)",
+    r"оценк\w+\s+(по\s+)?(тз|описан|задач)",
+    r"сколько\s+(стои|просите)",
+    r"свою\s+(цен|стоимост)\s+(в\s+)?отклик",
+    r"за\s+сколько\s+готовы",
+)
+_VAGUE_BUDGET_RE = re.compile("|".join(VAGUE_BUDGET_FLAGS), re.IGNORECASE)
+
+# Размытая ключевая технология
+VAGUE_TECH_FLAGS = (
+    r"как\w+[\s-]?(нибудь|то)\s+(cms|cms-к\w+|платформ\w*)",
+    r"как\w+[\s-]?(нибудь|то)\s+соц[\s-]?сет",
+    r"любая\s+(cms|платформ|технологи|бд|база)",
+    r"можно\s+(на\s+)?(любой|любом)\s+(стек|язык|фреймворк)",
+    r"\bна\s+любой\s+cms\b",
+    r"подберит[ея]\s+(сами|сам|стек|технологи)",
+)
+_VAGUE_TECH_RE = re.compile("|".join(VAGUE_TECH_FLAGS), re.IGNORECASE)
+
+# Срок исполнения не указан (не путать со сроком приёма откликов на Kwork)
+VAGUE_DEADLINE_FLAGS = (
+    r"срок\s+(исполнения|реализаци|разработк)\s+(уточн|обсуд|определим|зависит)",
+    r"когда\s+будет\s+готово\s+обсудим",
+    r"реальн\w+\s+срок\s+(уточн|обсуд)",
+    r"срок\s+обсужда\w+\s+отдельн",
+)
+_VAGUE_DEADLINE_RE = re.compile("|".join(VAGUE_DEADLINE_FLAGS), re.IGNORECASE)
+
+
 HARD_REJECT_KEYWORDS = (
     r"\b1c[\s-]*битрикс\b", r"\bбитрикс\b", r"\bbitrix\b",
     r"\bwordpress\b", r"\bвордпресс\b", r"\bна\s+wp\b",
@@ -551,6 +585,46 @@ def detect_open_ended_scope(title: str, description: str) -> tuple[int, list]:
 def detect_tech_incompetence(title: str, description: str) -> tuple[int, list]:
     unique = _flatten(_TECH_INCOMPETENCE_RE.findall(f"{title}\n{description}"))
     return (-2, unique) if unique else (0, [])
+
+
+def detect_critical_unknowns(
+    title: str,
+    description: str,
+    scope_flags: list,
+    open_flags: list,
+    tech_flags: list,
+    wanted: int,
+    limit: int,
+) -> list[str]:
+    """
+    P2.4: список 'критичных неизвестных' для GO/QUALI роутинга.
+    Возвращает короткие лейблы вида 'budget=размыт', 'tech=не указана'.
+    Если len(...) >= 2 — заказ помечается как QUALI (нужны уточнения).
+    """
+    text = f"{title}\n{description}"
+    unknowns: list[str] = []
+
+    if wanted == 0 and limit == 0:
+        unknowns.append("бюджет не указан")
+    elif _VAGUE_BUDGET_RE.search(text):
+        unknowns.append("бюджет размыт")
+
+    if _VAGUE_TECH_RE.search(text):
+        unknowns.append("ключевая технология не указана")
+
+    if scope_flags:
+        unknowns.append("детали отложены (ЛС/созвон/после)")
+
+    if open_flags:
+        unknowns.append("open-ended scope")
+
+    if tech_flags:
+        unknowns.append("заказчик не понимает технических деталей")
+
+    if _VAGUE_DEADLINE_RE.search(text):
+        unknowns.append("срок исполнения не указан")
+
+    return unknowns
 
 
 def _parse_budget_numbers(budget: str) -> tuple[int, int]:
@@ -1018,6 +1092,10 @@ async def score_project(
     parsing_pen, parsing_reason = detect_commercial_parsing(title, description)
     nko_caution = detect_nko_caution(title, description)
 
+    critical_unknowns = detect_critical_unknowns(
+        title, description, scope_flags, open_flags, tech_flags, wanted, limit,
+    )
+
     no_code_note = f"({no_code}) — cap 4" if no_code else ""
 
     prompt = SCORING_PROMPT.format(
@@ -1091,6 +1169,7 @@ async def score_project(
                     "hard_reject": False, "scope_unclear": scope_unclear,
                     "no_code_required": no_code, "site_category": site_category,
                     "hire_rate_penalty": False, "hired_percent": hired_percent,
+                    "critical_unknowns": critical_unknowns,
                     "breakdown": {},
                 }
 
@@ -1160,6 +1239,7 @@ async def score_project(
             "site_category": site_category,
             "hire_rate_penalty": hire_rate_penalty,
             "hired_percent": hired_percent,
+            "critical_unknowns": critical_unknowns,
         }
     except Exception as exc:
         logger.warning("Scoring error for '%s': %s", title[:60], exc)
