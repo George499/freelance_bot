@@ -1067,6 +1067,41 @@ K. Selenium / Playwright / эмуляция браузера для "автом�
    - Сайт не указан / указан чужой коммерческий сайт (маркетплейс, площадка) →
      серая или чёрная зона. Часть этого уже отсечена python-фильтром (см.
      P0.1 grey-zone), здесь подтверди штраф -3 если фильтр пропустил.
+L. Калибровка budget-vs-scope на ВЕРХНИХ бюджетах (150-300к).
+   Python-фильтр detect_budget_scope_mismatch ловит >5 функц.блоков при
+   бюджете <150к. На бюджетах 150-300к, где реальная стоимость может быть
+   500к+, проверяй вручную.
+
+   Прикинь expected_cost из таблицы компонентов (нашёл в описании → +стоимость):
+   - Простой лендинг: 30к
+   - Сложный лендинг с эффектами/анимацией: 60к
+   - Корпоративный сайт 10 страниц: 80к
+   - Каталог e-commerce: 100к
+   - Простой Telegram-бот: 30к
+   - Сложный Telegram-бот (с БД, оплатой, аналитикой): 60к
+   - Админ-панель: 50к
+   - Интеграция с внешним API: 40к (за каждую)
+   - Авторизация OAuth: 30к
+   - Оплата (ЮKassa, Stripe): 25к
+   - Личный кабинет с RBAC: 80к
+   - Аналитика / дашборд: 50к
+   - Real-time чат / уведомления: 60к
+   - Поиск с фильтрами: 25к
+   - Мультиязычность (5+ языков): 30к
+   - AI-интеграция с RAG: 80-150к
+   - Парсер с обработкой / антибаном: 50-100к
+
+   Если expected_cost / budget_max > 1.5 → штраф -2, в reason укажи
+   "budget_scope_v2: насчитано ~Xк (компоненты A, B, C) при бюджете Yк".
+   Не дублировать с штрафом python-фильтра detect_budget_scope_mismatch
+   (его сигнатура другая; считай только если он не сработал).
+
+ТИП ЗАКАЗА (для воронки short / long):
+- short: верхняя граница бюджета ≤50к, 1-2 функциональных блока,
+  junior-friendly, срок исполнения 1 день - 1 неделя. Цель — быстрый отзыв.
+- long: верхняя граница ≥100к, 3+ блока, сложная архитектура, срок ≥2 недель.
+  Цель — основной доход.
+- medium: между ними. Универсальный заказ.
 
 БАЗОВЫЙ СКОР:
 
@@ -1097,7 +1132,7 @@ AI (до 2):
 9-10 обязательно, 7-8 рекомендую, 5-6 пропуск, <5 пропуск.
 
 JSON без markdown:
-{{"score": 1-10, "is_ai": true/false, "breakdown": {{"stack": X, "budget": X, "ai": X, "quality": X, "penalties": X}}, "reason": "одно предложение"}}
+{{"score": 1-10, "is_ai": true/false, "type": "short"/"medium"/"long", "breakdown": {{"stack": X, "budget": X, "ai": X, "quality": X, "penalties": X}}, "reason": "одно предложение"}}
 """
 )
 
@@ -1394,6 +1429,7 @@ async def score_project(
                     "no_code_required": no_code, "site_category": site_category,
                     "hire_rate_penalty": False, "hired_percent": hired_percent,
                     "critical_unknowns": critical_unknowns,
+                    "order_type": "medium",
                     "breakdown": {},
                 }
 
@@ -1401,6 +1437,11 @@ async def score_project(
         is_ai_final = bool(result.get("is_ai", is_ai)) or is_ai
         reason = result.get("reason", "")
         breakdown = result.get("breakdown", {})
+
+        # P3.1: тип заказа для воронки short/long
+        order_type = result.get("type", "medium")
+        if order_type not in ("short", "medium", "long"):
+            order_type = "medium"
 
         scope_unclear = bool(scope_flags) or bool(open_flags) or bool(tech_flags)
 
@@ -1474,6 +1515,7 @@ async def score_project(
             "hire_rate_penalty": hire_rate_penalty,
             "hired_percent": hired_percent,
             "critical_unknowns": critical_unknowns,
+            "order_type": order_type,
         }
     except Exception as exc:
         logger.warning("Scoring error for '%s': %s", title[:60], exc)

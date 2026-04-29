@@ -86,6 +86,13 @@ def _kwork_action_keyboard(project_id: int, project_url: str) -> InlineKeyboardM
 
 QUALI_UNKNOWNS_THRESHOLD = 2
 
+# P3.1: тип заказа для воронки short / long
+ORDER_TYPE_BADGES = {
+    "short": ("🐜", "короткий"),
+    "medium": ("🦌", "средний"),
+    "long": ("🦣", "крупный"),
+}
+
 
 def _format_kwork_message(
     title: str,
@@ -104,6 +111,7 @@ def _format_kwork_message(
     is_quick_cash: bool = False,
     freshness_emoji: str = "",
     freshness_label: str = "",
+    order_type: str | None = None,
 ) -> str:
     unknowns = critical_unknowns or []
     is_quali = len(unknowns) >= QUALI_UNKNOWNS_THRESHOLD
@@ -125,6 +133,9 @@ def _format_kwork_message(
         header = f"🔴 Пропуск — скор {score}/10"
 
     badges = []
+    type_badge = ORDER_TYPE_BADGES.get(order_type) if order_type else None
+    if type_badge:
+        badges.append(f"{type_badge[0]} {type_badge[1]}")
     if freshness_emoji:
         badges.append(f"{freshness_emoji} {freshness_label}")
     if is_ai:
@@ -447,6 +458,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             is_quick_cash=is_quick_cash,
             freshness_emoji=freshness_emoji,
             freshness_label=freshness_label,
+            order_type=score_result.get("order_type"),
         )
 
         if respond:
