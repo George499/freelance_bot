@@ -491,7 +491,10 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             if offer:
                 await bot.send_message(
                     chat_id=config.tg_group,
-                    text=f"📝 <b>Готовый отклик:</b>\n\n{html.quote(offer)}",
+                    text=(
+                        f"📝 <b>Черновик отклика</b> (проверь и поправь перед "
+                        f"отправкой):\n\n{html.quote(offer)}"
+                    ),
                     message_thread_id=config.tg_topic_id,
                 )
 
