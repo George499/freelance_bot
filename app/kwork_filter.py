@@ -451,6 +451,101 @@ ATTACHMENT_HINT_FLAGS = (
 _ATTACHMENT_HINT_RE = re.compile("|".join(ATTACHMENT_HINT_FLAGS), re.IGNORECASE)
 
 
+# === P0.1: серая / чёрная зона — обход политик платформ ===
+
+# Whitelist легитимных применений (антифрод, тесты собственного сайта, парсинг
+# открытых данных, прокси для одного аккаунта). Если совпало — grey-zone детектор
+# возвращает pass даже при наличии grey-маркеров.
+LEGITIMATE_USE_FLAGS = (
+    r"\bhh\.ru\b|хэдхантер|headhunter",
+    r"\bгосуслуг|\.gov\.ru|\bросстат",
+    r"открытые\s+данные",
+    r"для\s+(собственн|нашего|своего)\s+(магазин|анализ|мониторинг|сайт|api|сервис|проект)",
+    r"для\s+(внутренн|собственн)\w*\s+аналитик",
+    r"мониторинг\s+цен\s+конкурент",
+    r"новостн\w+\s+(агрегат|парс)",
+    r"тестировани\w+\s+(нашего|собственн|своего|нашей)\s+(сайт|приложен|api|систем)",
+    r"антифрод|защит\w+\s+(собственн|нашего|нашей)\s+(сайт|продукт|проект|систем)",
+    r"\bодин\s+(аккаунт|пользоват)",
+    r"наш\w*\s+(собственн\w+\s+)?(сайт|api|сервис|проект|интернет[\s-]?магазин|корпоративн\w+\s+портал)",
+)
+_LEGITIMATE_USE_RE = re.compile("|".join(LEGITIMATE_USE_FLAGS), re.IGNORECASE)
+
+
+# Группа 1: архитектурный обход (telegram не видит, воркеры-прокси, скрытая связь).
+GREY_ARCHITECTURE_FLAGS = (
+    r"telegram\s+не\s+видит",
+    r"платформа\s+не\s+видит",
+    r"\bне\s+(?:увидит|обнаружит|спалит|запалит|отследит)\b",
+    r"невозможно\s+отследить",
+    r"скрыт\w+\s+связь",
+    r"воркер\w*\s+(?:на\s+)?(?:хостинг|прокси)",
+    r"бот\w*[\s\S]{0,80}?прокси[\s\S]{0,80}?воркер",
+    r"парсер\w*[\s\S]{0,40}?участник\w+\s+(?:каналов|чатов|групп)",
+    r"подпис\w+\s+запросов\s+(?:timestamp|nonce)",
+)
+_GREY_ARCH_RE = re.compile("|".join(GREY_ARCHITECTURE_FLAGS), re.IGNORECASE)
+
+# Группа 2: mass-action автоматизация (база аккаунтов, антидетект, эмуляция).
+MASS_ACTION_FLAGS = (
+    r"баз[аы]\s+аккаунтов",
+    r"мно[жг]еств\w+\s+аккаунт",
+    r"\bпрокси\b[\s\S]{0,80}?\bаккаунт",
+    r"\bаккаунт\w*[\s\S]{0,80}?\bпрокси\b",
+    r"антидетект",
+    r"автоматическ\w+\s+авторизац\w+\s+(?:на\s+)?сайт",
+    r"эмуляц\w+\s+(?:браузера|пользоват)",
+    r"selenium[\s\S]{0,80}?автоматизац",
+    r"playwright[\s\S]{0,80}?автоматизац",
+    r"добавлен\w+\s+(?:позиций|товаров|корзин)",
+    r"клик[аи]\s+автоматизированн",
+    r"автоклик\w+",
+)
+_MASS_ACTION_RE = re.compile("|".join(MASS_ACTION_FLAGS), re.IGNORECASE)
+
+# Группа 3: обход защиты (капча-сервисы, Cloudflare, "чтобы не банили").
+ANTI_PROTECTION_FLAGS = (
+    r"\brucaptcha\b",
+    r"\banti[\s-]?captcha\b",
+    r"\b2captcha\b",
+    r"capmonster",
+    r"обход\w*\s+(?:капчи|cloudflare|защит|блокировок)",
+    r"защита\s+от\s+(?:блокировок|банов)",
+    r"чтобы\s+не\s+(?:банили|палили)",
+    r"тайминг\w*\s+(?:для\s+)?(?:незаметн|естественн)",
+)
+_ANTI_PROTECTION_RE = re.compile("|".join(ANTI_PROTECTION_FLAGS), re.IGNORECASE)
+
+# Группа 4: обход правил/санкций платформ (Upwork-боты, парсеры маркетплейсов).
+SANCTIONS_BYPASS_FLAGS = (
+    r"\bupwork\b[\s\S]{0,80}?(?:бот|автоматиз|парсинг|api)",
+    r"\bfiverr\b[\s\S]{0,80}?(?:бот|автоматиз|парсинг|api)",
+    r"linkedin[\s\S]{0,80}?автомат",
+    r"парсер\s+(?:upwork|fiverr|wildberries|ozon|avito|wb)",
+    r"автоматическ\w+\s+отклик\w*\s+(?:на|для)\s+(?:upwork|fiverr|kwork)",
+    r"генераци\w+\s+отклик\w*\s+через\s+(?:gpt|ai|claude)",
+)
+_SANCTIONS_BYPASS_RE = re.compile("|".join(SANCTIONS_BYPASS_FLAGS), re.IGNORECASE)
+
+
+# === P2.2: маркеры авторского подхода для B2C-лендингов ===
+# Если landing+B2C-niche, но клиент явно отверг Tilda и хочет авторский дизайн
+# (анимации, GSAP, framer-motion и т.п.) — это наша зона, не reject.
+AUTHORSHIP_MARKERS = (
+    r"\bбез\s+tilda\b",
+    r"не\s+(?:на\s+|использу\w+\s+)?tilda",
+    r"необычн\w+\s+дизайн",
+    r"авторск\w+\s+(?:дизайн|подход|решени|концепци)",
+    r"WOW[\s-]?эффект",
+    r"визуальн\w+\s+эффект",
+    r"анимаци\w+",
+    r"\bGSAP\b|\bframer[\s-]?motion\b|\bthree\.?js\b|\blottie\b",
+    r"анимированн",
+    r"интерактивн\w+\s+эффект",
+)
+_AUTHORSHIP_RE = re.compile("|".join(AUTHORSHIP_MARKERS), re.IGNORECASE)
+
+
 HARD_REJECT_KEYWORDS = (
     r"\b1c[\s-]*битрикс\b", r"\bбитрикс\b", r"\bbitrix\b",
     r"\bwordpress\b", r"\bвордпресс\b", r"\bна\s+wp\b",
@@ -517,24 +612,84 @@ def detect_always_hard_reject(title: str, description: str) -> Optional[str]:
 
 def detect_landing_reject(title: str, description: str, budget_limit: int) -> Optional[str]:
     """
-    P1.1: hard-reject лендингов / одностраничников.
+    P1.1 + P2.2: hard-reject лендингов / одностраничников.
 
-    Условия:
-      1. landing keyword + B2C-ниша → reject независимо от бюджета.
-      2. landing keyword + budget_max < 80 000 ₽ → reject (Tilda-территория).
+    Условия (P2.2 уточнение — есть escape через AUTHORSHIP_MARKERS):
+      1. landing + B2C-ниша + бюджет < 100 000 ₽ + НЕТ авторских маркеров → reject.
+      2. landing + бюджет < 80 000 ₽ + НЕТ авторских маркеров → reject (Tilda-территория).
+
+    AUTHORSHIP_MARKERS (без tilda / GSAP / framer-motion / WOW-эффект / анимации
+    и т.п.) сигналят что клиент целенаправленно ищет кодовый авторский лендинг,
+    а не Tilda-сборку — это наша зона.
     """
     text = f"{title}\n{description}"
     if not _LANDING_RE.search(text):
         return None
 
+    has_authorship = bool(_AUTHORSHIP_RE.search(text))
+
     niche_match = _B2C_NICHES_RE.search(text)
     if niche_match:
-        return f"лендинг для B2C-ниши '{niche_match.group(0)}' — Tilda-территория"
+        if has_authorship:
+            return None  # авторский подход для B2C — пропускаем
+        if budget_limit and budget_limit >= 100_000:
+            return None  # бюджет >100к — даже B2C-ниша может быть нашей
+        return (
+            f"лендинг для B2C-ниши '{niche_match.group(0)}' — "
+            f"Tilda-территория (нет авторских маркеров, бюджет < 100к)"
+        )
 
-    if 0 < budget_limit < 80_000:
+    if 0 < budget_limit < 80_000 and not has_authorship:
         return f"лендинг с бюджетом {budget_limit:,} ₽ < 80 000 ₽ — Tilda-территория"
 
     return None
+
+
+def detect_grey_zone(title: str, description: str) -> tuple[str, int, str]:
+    """
+    P0.1: серая / чёрная зона — обход политик платформ, mass-action, обход защиты.
+
+    Returns:
+        (action, penalty, reason)
+        action: 'pass' | 'penalty' | 'hard_reject'
+        penalty: -3 (gr1/gr2 один маркер), -2 (gr3/gr4 один маркер), 0 — иначе.
+
+    Логика:
+      - 2+ маркера в одной группе ИЛИ ≥2 групп задействованы → hard_reject.
+      - Один маркер в gr1 (архитектурный обход) или gr2 (mass-action) → -3.
+      - Один маркер в gr3 (обход защиты) или gr4 (обход правил платформ) → -2.
+      - Whitelist (LEGITIMATE_USE) полностью гасит детектор — pass.
+    """
+    text = f"{title}\n{description}"
+
+    if _LEGITIMATE_USE_RE.search(text):
+        return "pass", 0, ""
+
+    groups = []
+    for re_obj, group_name, base_penalty in (
+        (_GREY_ARCH_RE, "архитектурный обход", -3),
+        (_MASS_ACTION_RE, "mass-action", -3),
+        (_ANTI_PROTECTION_RE, "обход защиты", -2),
+        (_SANCTIONS_BYPASS_RE, "обход правил платформ", -2),
+    ):
+        matches = [m.group(0) for m in re_obj.finditer(text)]
+        if matches:
+            groups.append((group_name, matches, base_penalty))
+
+    if not groups:
+        return "pass", 0, ""
+
+    has_double_in_one_group = any(len(matches) >= 2 for _, matches, _ in groups)
+    has_multi_groups = len(groups) >= 2
+
+    if has_double_in_one_group or has_multi_groups:
+        summary = "; ".join(
+            f"{name}({len(matches)})" for name, matches, _ in groups
+        )
+        return "hard_reject", 0, f"grey/black zone: {summary}"
+
+    name, matches, penalty = groups[0]
+    return "penalty", penalty, f"grey zone {name}: '{matches[0]}'"
 
 
 def detect_external_api_barrier(title: str, description: str) -> tuple[int, str]:
@@ -866,10 +1021,14 @@ G. "CMS" или "админ-панель для управления конте�
 H. AI-маркетинговый клиент vs AI-инженерный — критично.
    ШТРАФ -2 к БАЗОВОМУ скору если признаки AI-маркетинга:
    - "сетка агентов / ассистентов" в маркетинговом контексте
+   - "мультиагентная система" в контексте маркетинга/продаж/инфобиза
    - "ИИ-сотрудник", "ИИ-помощник заменит отдел"
    - "автоматизировать всё с помощью AI"
    - "познакомить агентов с источниками", "обучить нейросеть на наших данных"
      при отсутствии конкретики по архитектуре
+   - "боты сами разрабатывают/создают/формируют контент/стратегию"
+   - "генеративный AI для бизнеса/продаж/клиентов" в обобщённой форме
+   - "AI-агентство по инфобизу"
    - размытые модные термины без технического понимания
    БЕЗ штрафа (иногда +1) если признаки AI-инженерии:
    - конкретные термины: function calling, RAG, vector search, embedding,
@@ -885,6 +1044,29 @@ I. nko_caution=да — НЕ штрафовать автоматически, н
      "nko_caution: уточнить условия".
    В reason обязательно упомянуть "nko_caution" чтобы я уточнил условия в первом
    сообщении.
+J. Domain-expertise mismatch (AI в специализированной области).
+   ШТРАФ -2 если AI-проект требует "экспертных решений" в области требующей
+   профессиональной квалификации, И верхняя граница бюджета < 500 000 ₽.
+   Признаки: заказчик хочет чтобы система "анализировала параметры", "предлагала
+   решения", "проверяла на нормативные ограничения", "выполняла расчёты".
+   Профессиональные области:
+   - Инженерное проектирование (строительство, архитектура, с/х, промышленность)
+   - Медицина и фармацевтика (диагностика, назначения)
+   - Юриспруденция (составление документов, оценка дел)
+   - Бухгалтерия и налогообложение (составление отчётности)
+   - Финансовый консалтинг (рекомендации по инвестициям)
+   Реальная такая система требует команды экспертов и программистов на годы;
+   за меньший бюджет — либо chat-bot с галлюцинациями, либо конфликт ожиданий.
+   БЕЗ штрафа если заказчик прямо пишет: "вспомогательный инструмент",
+   "черновики", "первый этап анализа", "не заменяет специалиста".
+K. Selenium / Playwright / эмуляция браузера для "автоматизации действий на сайте":
+   - Если указан собственный сайт заказчика ("наш интернет-магазин на example.com",
+     "наш корпоративный портал") → легитимно, без штрафа.
+   - Если у целевого сайта есть публичный API, но просят браузерную автоматизацию →
+     это обход чего-то, серая зона, штраф -2 или -3.
+   - Сайт не указан / указан чужой коммерческий сайт (маркетплейс, площадка) →
+     серая или чёрная зона. Часть этого уже отсечена python-фильтром (см.
+     P0.1 grey-zone), здесь подтверди штраф -3 если фильтр пропустил.
 
 БАЗОВЫЙ СКОР:
 
@@ -1044,6 +1226,19 @@ async def score_project(
             "reason": f"требуется no-code: '{no_code_hard}'",
             "hard_reject": True, "scope_unclear": False,
             "no_code_required": no_code_hard, "site_category": "not_site",
+            "hire_rate_penalty": False, "hired_percent": hired_percent,
+            "breakdown": {},
+        }
+
+    # P0.1: серая / чёрная зона — early hard-reject если 2+ маркера или ≥2 групп.
+    # Penalty (-3 / -2) применяется ниже, после Haiku, для слабых сигналов.
+    grey_action, grey_penalty, grey_reason = detect_grey_zone(title, description)
+    if grey_action == "hard_reject":
+        logger.info("GreyZoneHardReject [%s]: %s", title[:60], grey_reason)
+        return {
+            "score": 0, "is_ai": is_ai, "reason": grey_reason,
+            "hard_reject": True, "scope_unclear": False, "no_code_required": None,
+            "site_category": "not_site",
             "hire_rate_penalty": False, "hired_percent": hired_percent,
             "breakdown": {},
         }
@@ -1251,6 +1446,16 @@ async def score_project(
             logger.info(
                 "CommercialParsing [%s]: %d→%d — %s",
                 title[:60], old_score, score, parsing_reason,
+            )
+
+        # P0.1: штраф за серую зону (один маркер; multi-маркеры уже отсечены до Haiku)
+        if grey_action == "penalty" and grey_penalty:
+            old_score = score
+            score = max(0, score + grey_penalty)
+            reason = f"{reason}; {grey_reason}" if reason else grey_reason
+            logger.info(
+                "GreyZonePenalty [%s]: %d→%d — %s",
+                title[:60], old_score, score, grey_reason,
             )
 
         logger.info(
