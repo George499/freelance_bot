@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import app.kwork_filter as kf; print\\('OK', 'detectors:', kf.detect_always_hard_reject, kf.detect_landing_reject, kf.detect_external_api_barrier, kf.detect_commercial_parsing, kf.detect_nko_caution\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(gh auth *)",
+      "PowerShell(git -C \"C:/Users/�ᠥ�/Documents/GitHub/freel_bot\" push origin main 2>&1)",
+      "PowerShell(where.exe git-credential-manager 2>$null; where.exe git-credential-manager-core 2>$null; where.exe git-credential-wincred 2>$null; \\(Get-Command git\\).Source)",
+      "Bash(.venv/Scripts/python.exe -c \"import kwork; import inspect; print\\(inspect.getfile\\(kwork\\)\\)\")",
+      "Bash(PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe)"
+    ]
+  }
+}

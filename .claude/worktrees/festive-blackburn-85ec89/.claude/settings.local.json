@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cp \"/tmp/files_zip/kwork_filter.py\" \"/c/Users/Исаев/Documents/GitHub/freel_bot/app/kwork_filter.py\")",
+      "Bash(cp \"/tmp/files_zip/parser.py\" \"/c/Users/Исаев/Documents/GitHub/freel_bot/app/parser.py\")",
+      "Read(//c/Users/Исаев/Documents/GitHub/freel_bot/app/**)",
+      "Read(//c/Users/Исаев/Documents/GitHub/freel_bot/**)",
+      "Bash(/z/freel_venv/Scripts/python.exe -c ' *)",
+      "Bash(/z/freel_venv/Scripts/python.exe -c \"from app.kwork_filter import score_project, quota_status, should_respond, detect_site_category; from app.parser import get_kwork_projects, _format_kwork_message, TELEGRAM_SCORE_THRESHOLD; from app.bot.quota_handlers import quota_router; print\\('OK'\\)\")",
+      "Bash(/z/freel_venv/Scripts/python.exe -c \"from app.kwork_filter import score_project; from app.parser import get_kwork_projects, _format_kwork_message; print\\('OK'\\)\")",
+      "Bash(./.venv/Scripts/python.exe -c \"import sys; print\\(sys.executable\\); print\\(sys.prefix\\)\")",
+      "Bash(./.venv/Scripts/python.exe -c \"from app.kwork_filter import score_project; from app.parser import get_kwork_projects; from app.bot.quota_handlers import quota_router; import aiogram, anthropic, aiohttp, feedparser, kwork; print\\('OK, aiogram', aiogram.__version__\\)\")"
+    ]
+  }
+}
