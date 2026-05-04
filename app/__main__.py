@@ -207,5 +207,12 @@ def main():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+    # force=True: какой-то импорт (kwork/g4f/anthropic) ставит свой StreamHandler
+    # на stderr раньше нас, без force basicConfig становится no-op.
+    logging.basicConfig(
+        level=logging.INFO,
+        stream=sys.stdout,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        force=True,
+    )
     main()
