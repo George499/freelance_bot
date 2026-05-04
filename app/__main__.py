@@ -6,6 +6,7 @@ from datetime import datetime
 from aiogram import Bot, Dispatcher
 from aiogram.client.bot import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp.web import run_app
@@ -129,7 +130,14 @@ async def on_shutdown(config: Settings, scheduler: AsyncIOScheduler):
 
 
 def create_bot(config: Settings) -> Bot:
-    session: AiohttpSession = AiohttpSession()
+    if config.tg_api_url:
+        api_server = TelegramAPIServer.from_base(config.tg_api_url.rstrip("/"))
+        session = AiohttpSession(api=api_server)
+        logging.getLogger(__name__).info(
+            "Bot API через прокси: %s", config.tg_api_url,
+        )
+    else:
+        session = AiohttpSession()
     session.middleware(RetryRequestMiddleware())
 
     return Bot(

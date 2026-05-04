@@ -38,6 +38,10 @@ class Settings(BaseSettings):
 
     anthropic_api_key: Optional[str] = None
 
+    # Опциональный прокси для Bot API (CF Worker и т.п.)
+    # если задан — aiogram пойдёт через него вместо api.telegram.org.
+    tg_api_url: Optional[str] = None
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
