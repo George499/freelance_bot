@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # если задан — aiogram пойдёт через него вместо api.telegram.org.
     tg_api_url: Optional[str] = None
 
+    # Опциональный прокси для Anthropic API (CF Worker).
+    # Само поле в коде не используется — anthropic SDK читает env-переменную
+    # ANTHROPIC_BASE_URL автоматически. Объявлено здесь чтобы pydantic не падал
+    # на extra_forbidden когда переменная задана в .env.
+    anthropic_base_url: Optional[str] = None
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
