@@ -1720,14 +1720,19 @@ async def score_project(
             }
 
     wanted, limit = _parse_budget_numbers(budget)
-    bi = _budget_too_low(wanted, limit, is_ai)
-    if bi:
-        logger.info("BudgetLow [%s]: %s", title[:60], bi)
-        return {
-            "score": 0, "is_ai": is_ai, "reason": bi,
-            "hard_reject": True, "scope_unclear": False, "no_code_required": None, "site_category": "not_site",
-            "breakdown": {},
-        }
+    # v3-fix: категорию определяем ДО бюджетного guard'а, иначе FAST-заказы
+    # с бюджетом <50к режутся hard-reject'ом и не доходят до FAST-промпта.
+    early_category = categorize_by_budget(limit, wanted)
+    if early_category == "BIG":
+        bi = _budget_too_low(wanted, limit, is_ai)
+        if bi:
+            logger.info("BudgetLow [%s]: %s", title[:60], bi)
+            return {
+                "score": 0, "is_ai": is_ai, "reason": bi,
+                "hard_reject": True, "scope_unclear": False, "no_code_required": None, "site_category": "not_site",
+                "breakdown": {},
+                "category": early_category, "score_big": None, "score_fast": None,
+            }
 
     # Категория сайт/лендинг: готовый макет или чистый дизайн = hard reject
     site_category, site_note = detect_site_category(title, description)
