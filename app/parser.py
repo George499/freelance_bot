@@ -93,6 +93,13 @@ ORDER_TYPE_BADGES = {
     "long": ("🦣", "крупный"),
 }
 
+# v3: бейдж категории заказа
+CATEGORY_BADGES = {
+    "BIG": "💼 BIG",
+    "FAST": "🚀 FAST",
+    "DUAL": "🔄 DUAL",
+}
+
 
 def _format_kwork_message(
     title: str,
@@ -112,25 +119,35 @@ def _format_kwork_message(
     freshness_emoji: str = "",
     freshness_label: str = "",
     order_type: str | None = None,
+    category: str | None = None,
+    score_big: int | None = None,
+    score_fast: int | None = None,
 ) -> str:
     unknowns = critical_unknowns or []
     is_quali = len(unknowns) >= QUALI_UNKNOWNS_THRESHOLD
 
+    score_suffix = ""
+    if category == "DUAL" and score_big is not None and score_fast is not None:
+        score_suffix = f" (BIG={score_big}, FAST={score_fast})"
+
     # P2.4: GO / QUALI / Пограничный / Пропуск роутинг
     if respond:
         if is_quali:
-            header = f"🟡 QUALI — скор {score}/10 (ответить, но сначала уточнить)"
+            status = f"🟡 QUALI — скор {score}/10{score_suffix} (ответить, но сначала уточнить)"
         elif score >= 9:
-            header = f"🔥 GO — скор {score}/10"
+            status = f"🔥 GO — скор {score}/10{score_suffix}"
         else:
-            header = f"🟢 GO — скор {score}/10"
+            status = f"🟢 GO — скор {score}/10{score_suffix}"
     elif score >= TELEGRAM_SCORE_THRESHOLD:
         if is_quali:
-            header = f"🟡 QUALI — скор {score}/10 (пограничный + 2+ неизвестных)"
+            status = f"🟡 QUALI — скор {score}/10{score_suffix} (пограничный + 2+ неизвестных)"
         else:
-            header = f"👀 Пограничный — скор {score}/10 (ждём лучшего)"
+            status = f"👀 Пограничный — скор {score}/10{score_suffix} (ждём лучшего)"
     else:
-        header = f"🔴 Пропуск — скор {score}/10"
+        status = f"🔴 Пропуск — скор {score}/10{score_suffix}"
+
+    cat_badge = CATEGORY_BADGES.get(category) if category else None
+    header = f"{cat_badge}  {status}" if cat_badge else status
 
     badges = []
     type_badge = ORDER_TYPE_BADGES.get(order_type) if order_type else None
@@ -459,6 +476,9 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             freshness_emoji=freshness_emoji,
             freshness_label=freshness_label,
             order_type=score_result.get("order_type"),
+            category=score_result.get("category"),
+            score_big=score_result.get("score_big"),
+            score_fast=score_result.get("score_fast"),
         )
 
         if respond:

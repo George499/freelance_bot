@@ -11,6 +11,7 @@ Kwork filter v3.
 - Early-period (<20% прошло) порог 8
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -917,6 +918,239 @@ def detect_budget_scope_mismatch(
     return 0, ""
 
 
+# === v3: усиления BIG-промпта (применяются после Haiku, как post-penalty) ===
+
+# 3.1: терминологический mismatch — крупный класс системы + сжатый срок.
+_BIG_SYSTEM_CLASS_RE = re.compile(
+    r"\bмаркетплейс|\bcrm\b|\berp\b|"
+    r"социальн\w+\s+сет|торгов\w+\s+площадк|"
+    r"\bплатформ(а|у|е|ы|ой|ам)\b",
+    re.IGNORECASE,
+)
+_TIGHT_DEADLINE_TEXT_RE = re.compile(
+    r"за\s+(одну\s+)?(недел|месяц)|"
+    r"\bсрочно\b|\bв\s+сжат\w+\s+срок|"
+    r"до\s+конца\s+(месяц|недел|квартал)|"
+    r"за\s+\d+\s+(день|дня|дней|недел)",
+    re.IGNORECASE,
+)
+
+
+def detect_terminology_mismatch(title: str, description: str) -> tuple[int, str]:
+    """v3 3.1: класс системы (маркетплейс/CRM/ERP/соц.сеть/платформа) + сжатый срок.
+
+    Срок Kwork = срок ПОДАЧИ заявок, не исполнения, поэтому смотрим только
+    текстовые маркеры срока внутри описания.
+    """
+    text = f"{title}\n{description}"
+    sys_match = _BIG_SYSTEM_CLASS_RE.search(text)
+    if not sys_match:
+        return 0, ""
+    deadline_match = _TIGHT_DEADLINE_TEXT_RE.search(text)
+    if not deadline_match:
+        return 0, ""
+    return -3, (
+        f"терминологический mismatch — '{sys_match.group(0)}' + "
+        f"'{deadline_match.group(0)}': класс системы требует месяцев работы"
+    )
+
+
+# 3.2: требование public github — фильтр под профиль не подходит.
+_GITHUB_REQUIRED_RE = re.compile(
+    r"обязательн\w+\s+ссылк\w+\s+на\s+github|"
+    r"github\s+обязател|"
+    r"без\s+github\s+не\s+(отклика|расс|пиш)|"
+    r"не\s+рассматрива\w+\s+без\s+(репозитори|github)|"
+    r"примеры\s+кода\s+в\s+открытом\s+доступ|"
+    r"открытый\s+github\s+обязател",
+    re.IGNORECASE,
+)
+
+
+def detect_github_required(title: str, description: str) -> tuple[int, str]:
+    """v3 3.2: требование public github."""
+    match = _GITHUB_REQUIRED_RE.search(f"{title}\n{description}")
+    if match:
+        return -3, f"требование public github: '{match.group(0)}'"
+    return 0, ""
+
+
+# 3.3: NDA до ТЗ + hire_rate 0% — паттерн собирателя КП.
+_NDA_PATTERN_RE = re.compile(
+    r"тз\s+после\s+(отклика|подпис|соглас)|"
+    r"тз\s+под\s+nda|"
+    r"nda\s+(до|перед)\s+тз|"
+    r"подробност\w+\s+после\s+(подпис|соглас|nda)|"
+    r"детал\w+\s+(в\s+)?лс\s+после|"
+    r"подробн\w+\s+после\s+согласи",
+    re.IGNORECASE,
+)
+
+
+def detect_nda_collector(
+    title: str, description: str, hired_percent: Optional[int]
+) -> tuple[int, str]:
+    """v3 3.3: NDA до ТЗ при hire_rate 0% — собиратель КП."""
+    if hired_percent is None or hired_percent > 0:
+        return 0, ""
+    match = _NDA_PATTERN_RE.search(f"{title}\n{description}")
+    if not match:
+        return 0, ""
+    return -2, (
+        f"NDA до ТЗ при hire_rate 0%: '{match.group(0)}' — возможный собиратель КП"
+    )
+
+
+# 3.4: real-time стриминг при низком бюджете.
+_STREAMING_RE = re.compile(
+    r"\bстриминг\w*|\bтрансляци\w*|live[\s-]?видео|"
+    r"\bwebrtc\b|\bhls\b|"
+    r"\bмедиасервер\w*|\bmediasoup\b|\bjanus\b|ant[\s-]?media|\bkurento\b",
+    re.IGNORECASE,
+)
+
+
+def detect_streaming_low_budget(
+    title: str, description: str, budget_limit: int
+) -> tuple[int, str]:
+    """v3 3.4: real-time стриминг при бюджете < 150к."""
+    if not budget_limit or budget_limit >= 150_000:
+        return 0, ""
+    match = _STREAMING_RE.search(f"{title}\n{description}")
+    if not match:
+        return 0, ""
+    return -3, (
+        f"real-time стриминг ('{match.group(0)}') при бюджете {budget_limit:,} ₽ "
+        f"< 150 000 ₽ — инфраструктура от 200к"
+    )
+
+
+# 3.5: enterprise scope при низком бюджете (3+ маркера).
+_ENTERPRISE_SCOPE_MARKERS = (
+    (
+        re.compile(
+            r"сайт.{0,40}админк|админк.{0,40}сайт|сайт.{0,40}интеграц.{0,40}админк",
+            re.IGNORECASE,
+        ),
+        "сайт+админка+интеграции",
+    ),
+    (
+        re.compile(
+            r"(\d+|пят[ьи]|шест[ьи]|сем[ьи]|восем[ьи]|девят[ьи]|десят[ьи])"
+            r"\s*\+?\s*язык",
+            re.IGNORECASE,
+        ),
+        "5+ языков",
+    ),
+    (
+        re.compile(
+            r"\bsitemap\b|\bhreflang\b|\b301[\s-]?редирект|schema\.org|"
+            r"микроразметк\w+\s+(schema|json[\s-]?ld)",
+            re.IGNORECASE,
+        ),
+        "SEO полного цикла",
+    ),
+    (
+        re.compile(
+            r"\bроли\b.{0,40}(админ|редактор|менеджер)|"
+            r"admin.{0,30}редактор|разграничени\w+\s+прав|"
+            r"\brbac\b",
+            re.IGNORECASE,
+        ),
+        "роли в админке",
+    ),
+    (
+        re.compile(
+            r"\bbullmq\b|\bcelery\b|очеред\w+\s+задач|фонов\w+\s+обработк",
+            re.IGNORECASE,
+        ),
+        "очередь задач",
+    ),
+    (
+        re.compile(
+            r"\bredis\b|кеширован|кеш\s+(переводов|данных|запрос)",
+            re.IGNORECASE,
+        ),
+        "кеширование",
+    ),
+    (
+        re.compile(
+            r"тз\s+с\s+раздел|структурирован\w+\s+тз|документ\s+с\s+разделами|"
+            r"прикреплён\w*\s+тз",
+            re.IGNORECASE,
+        ),
+        "структурированное ТЗ",
+    ),
+)
+
+
+def detect_enterprise_scope_low_budget(
+    title: str, description: str, budget_limit: int
+) -> tuple[int, str]:
+    """v3 3.5: 3+ маркера enterprise scope при бюджете < 150к."""
+    if not budget_limit or budget_limit >= 150_000:
+        return 0, ""
+    text = f"{title}\n{description}"
+    matched = [name for re_obj, name in _ENTERPRISE_SCOPE_MARKERS if re_obj.search(text)]
+    if len(matched) < 3:
+        return 0, ""
+    return -3, (
+        f"enterprise scope ({', '.join(matched)}) при бюджете "
+        f"{budget_limit:,} ₽ < 150 000 ₽ — реальная стоимость 250к+"
+    )
+
+
+# 3.6: domain expertise — fuzzy fallback на специфические классификаторы/нормативы.
+_DOMAIN_EXPERTISE_RE = re.compile(
+    r"\bфкко\b|"
+    r"\bснип\b|\bсп\s+\d+\.\d+|"
+    r"\bгост\s+\d|"
+    r"медицинск\w+\s+классификатор|"
+    r"\bмкб[\s-]?10\b|"
+    r"\bокпд\b|\bокп\s*\d|"
+    r"строительн\w+\s+норматив|"
+    r"бухгалтерск\w+\s+отчётн\w+\s+по\s+1с|"
+    r"специфическ\w+\s+(api|апи)\s+(ржд|почт\w+\s+росс|мин\w+|госуслуг)|"
+    r"обращени\w+\s+с\s+отход|"
+    r"экологическ\w+\s+норматив|"
+    r"\bтн[\s-]?вэд\b|"
+    r"фармакопе|клиническ\w+\s+рекоменд",
+    re.IGNORECASE,
+)
+
+
+def detect_domain_expertise(title: str, description: str) -> tuple[int, str]:
+    """v3 3.6: страховочный детектор узкодоменной экспертизы.
+
+    Применяется в дополнение к правилу J Haiku — если явные маркеры
+    классификаторов / нормативов сработали, ставим -3 в коде.
+    """
+    match = _DOMAIN_EXPERTISE_RE.search(f"{title}\n{description}")
+    if match:
+        return -3, f"domain expertise mismatch: '{match.group(0)}' — узкодоменная экспертиза"
+    return 0, ""
+
+
+# === v3: категоризация заказа по бюджету ===
+
+def categorize_by_budget(price_limit: int, price_wanted: int = 0) -> str:
+    """v3 1.1: категория для роутинга промптов.
+
+    BIG    (>=100к)  — крупные заказы для дохода.
+    FAST   (<=50к)   — быстрые заказы для отзывов.
+    DUAL   (50-100к) — скорится двумя промптами параллельно.
+    BIG    (бюджет=0) — консервативно, как unknown-бюджет.
+    """
+    effective = price_limit or price_wanted
+    if effective == 0:
+        return "BIG"
+    if effective <= 50_000:
+        return "FAST"
+    if effective >= 100_000:
+        return "BIG"
+    return "DUAL"
+
+
 # === quota_status для rolling-периода Kwork ===
 
 def quota_status(
@@ -1137,6 +1371,102 @@ JSON без markdown:
 )
 
 
+# === v3: FAST-промпт для быстрых заказов (1-3 дня, ≤50к) ===
+
+FAST_SCORING_PROMPT = (
+    DEVELOPER_PROFILE
+    + """
+
+===
+ЗАКАЗ:
+Название: {title}
+Описание: {description}
+Бюджет: {budget}
+Срок: {deadline}
+Откликов: {responses_count}
+
+PRE-CHECK:
+- AI: {is_ai}
+- No-code требуется: {no_code} {no_code_note}
+- Scope flags: {scope_flags} (penalty {scope_penalty})
+- Open-ended: {open_ended_flags} (penalty {open_ended_penalty})
+- Tech incompetence: {tech_flags} (penalty {tech_penalty})
+- Категория сайта/лендинга: {site_category} ({site_note})
+===
+
+КАТЕГОРИЯ FAST — быстрые заказы на 1-3 дня работы.
+Цель: отзывы для профиля + покрытие краткосрочных финансовых задач.
+
+ВАЖНО ДЛЯ ОЦЕНКИ:
+- НЕ оценивать в плюс наличие AI-компоненты (для FAST не нужно).
+- НЕ требовать комплексности и fullstack-проекта (это не FAST).
+- Отдавать приоритет ЗАМКНУТОСТИ и ЧЁТКОСТИ скоупа над масштабом.
+- Тип заказа всегда "short".
+
+СТАРТОВЫЙ СКОР: 5 (середина шкалы).
+
+ПОЗИТИВНЫЕ МАРКЕРЫ (+1 каждый):
+
+Чёткость скоупа (до +3):
++1 чёткое ТЗ или ясные требования (заказчик знает что хочет, не "обсудим")
++1 замкнутый scope: НЕТ "первый этап", "потом обсудим", "стек может расшириться", "по ходу уточним"
++1 конкретика: указаны имена сайтов / форматы файлов / поля данных / API
+
+Тематическое попадание (+1, один из классов):
+- Класс A — простые приложения/боты/скрипты:
+  парсеры открытых данных в CSV/Excel/JSON;
+  простые Telegram-боты (уведомления, FAQ, калькулятор, приём заявок);
+  скрипты автоматизации (обработка файлов, конвертации);
+  утилиты для Excel/Google Sheets, Apps Script.
+- Класс B — серверные/инфраструктурные:
+  деплой на VPS/VDS, nginx, SSL через Certbot;
+  Docker / docker-compose для существующего проекта;
+  CI/CD на GitHub Actions / GitLab CI;
+  перенос проекта между серверами/хостингами;
+  бэкапы, базовый мониторинг (Sentry, Healthchecks);
+  webhook-обработчики (Telegram, GitHub, ЮKassa).
+- Класс C — интеграции готовых API:
+  подключение платёжек (ЮKassa, CloudPayments, Robokassa);
+  подключение рассылок (SendPulse, UniSender, Mailgun);
+  подключение аналитики (Метрика, GA4) с настройкой целей;
+  импорт/экспорт данных между системами (разовый ETL);
+  базовая SEO (sitemap, robots, мета, OG, schema.org).
+- Класс D — доработки существующих проектов:
+  мелкие правки в Next.js/NestJS/React/Python проектах;
+  добавление 1-2 фич в существующий код;
+  фикс багов;
+  базовая оптимизация скорости (lighthouse, lazy loading, минификация).
+
+Адекватность бюджета:
++1 бюджет соответствует объёму задачи (не "сделайте CRM за 30к")
+
+НЕГАТИВНЫЕ МАРКЕРЫ (-2 каждый):
+- Расширяемость: "первый этап", "потом обсудим", "стек может расшириться",
+  "по ходу скоуп уточним", "пилот с продолжением"
+- Требование верстать по готовой Figma/PSD/макету (pixel-perfect по чужому дизайну)
+- Лендинг для B2C-услуг (тренер, дезинфекция, салон, мастер) — Tilda-территория
+- Описание абстрактное без конкретики ("сделайте бота для бизнеса", "нужна автоматизация")
+- "Консультация по разработке" / "поможете с выбором архитектуры"
+- Деплой на инфраструктуру клиента с SSH-доступом без чёткого ТЗ
+- Дизайн с нуля где требуется арт-направление (не быстрый шаблон)
+
+ДОПОЛНИТЕЛЬНЫЕ НЕГАТИВНЫЕ МАРКЕРЫ (-1 каждый):
+- Windows Server / IIS / Active Directory
+- Kubernetes от продакшна (k8s-кластер с нуля)
+- Bitrix / WordPress миграция
+- "Разобраться с нашей текущей инфраструктурой"
+
+ВАЖНО ПРО СРОКИ KWORK:
+"Срок" на Kwork = срок ПОДАЧИ ЗАЯВОК, не исполнения. Не штрафовать за "1-3 дня".
+
+ИТОГ = 5 + позитивы - негативы. Зажать в [1, 10].
+
+JSON без markdown:
+{{"score": 1-10, "is_ai": true/false, "type": "short", "breakdown": {{"clarity": X, "topic": X, "budget": X, "negatives": X}}, "reason": "одно предложение"}}
+"""
+)
+
+
 OFFER_PROMPT_CLAUDE = """Ты пишешь отклик на Kwork от лица fullstack-разработчика. Заказ прошёл скоринг и достоин качественного отклика. Текст пойдёт пользователю как ЧЕРНОВИК для проверки и ручной отправки — поэтому качество критично.
 
 КАТЕГОРИЧЕСКИЕ ПРАВИЛА (нарушение = брак, отклик уйдёт в мусор):
@@ -1230,6 +1560,67 @@ def looks_like_refusal(offer: str) -> bool:
     return any(marker in lower for marker in REFUSAL_MARKERS)
 
 
+async def _run_haiku_scoring(
+    client: anthropic.AsyncAnthropic,
+    prompt_template: str,
+    prompt_kwargs: dict,
+    title: str,
+    fallback_type: str = "medium",
+) -> dict:
+    """v3: один Haiku-вызов для скоринга с retry на JSON-ошибку.
+
+    Возвращает dict с полями score / is_ai / reason / breakdown / type.
+    При двух подряд JSON-ошибках возвращает fallback c score=6 и пометкой
+    [json_failed] в reason.
+    """
+    prompt = prompt_template.format(**prompt_kwargs)
+
+    async def _call(extra_instruction: str = "") -> str:
+        full_prompt = prompt + ("\n\n" + extra_instruction if extra_instruction else "")
+        msg = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=500,
+            temperature=0,
+            messages=[{"role": "user", "content": full_prompt}],
+        )
+        r = msg.content[0].text.strip()
+        if r.startswith("```"):
+            r = r.split("```")[1]
+            if r.startswith("json"):
+                r = r[4:]
+            r = r.strip()
+        return r
+
+    raw = await _call()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as je:
+        logger.warning(
+            "JSON parse failed for '%s': %s — retrying with strict instruction",
+            title[:60], je,
+        )
+        strict = (
+            "КРИТИЧНО: верни СТРОГО валидный JSON. Все кавычки внутри строк "
+            "значений ЭКРАНИРУЙ обратным слешем (\\\"). Не добавляй текст до "
+            "или после JSON. Не используй markdown."
+        )
+        try:
+            raw2 = await _call(strict)
+            return json.loads(raw2)
+        except (json.JSONDecodeError, Exception) as je2:
+            logger.warning(
+                "JSON parse failed twice for '%s': %s — fallback score=6",
+                title[:60], je2,
+            )
+            return {
+                "score": 6,
+                "is_ai": False,
+                "reason": "[json_failed] fallback: не удалось распарсить JSON от Claude",
+                "breakdown": {},
+                "type": fallback_type,
+            }
+
+
 async def score_project(
     title: str,
     description: str,
@@ -1244,6 +1635,7 @@ async def score_project(
         "hard_reject": False, "scope_unclear": False, "no_code_required": None, "site_category": "not_site",
         "hire_rate_penalty": False, "hired_percent": hired_percent,
         "breakdown": {},
+        "category": None, "score_big": None, "score_fast": None,
     }
     if not anthropic_api_key:
         return default_result
@@ -1367,8 +1759,12 @@ async def score_project(
     )
 
     no_code_note = f"({no_code}) — cap 4" if no_code else ""
+    budget_limit_eff = limit or wanted
 
-    prompt = SCORING_PROMPT.format(
+    # v3: категория заказа для роутинга промптов (BIG/FAST/DUAL).
+    category = categorize_by_budget(limit, wanted)
+
+    big_kwargs = dict(
         title=title,
         description=description[:1500],
         budget=budget,
@@ -1391,68 +1787,70 @@ async def score_project(
         parsing_penalty=parsing_pen,
         nko_caution="да" if nko_caution else "нет",
     )
+    fast_kwargs = {k: big_kwargs[k] for k in (
+        "title", "description", "budget", "deadline", "responses_count",
+        "is_ai", "no_code", "no_code_note",
+        "scope_flags", "scope_penalty",
+        "open_ended_flags", "open_ended_penalty",
+        "tech_flags", "tech_penalty",
+        "site_category", "site_note",
+    )}
 
     try:
         client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
 
-        async def _call(extra_instruction: str = "") -> str:
-            full_prompt = prompt + ("\n\n" + extra_instruction if extra_instruction else "")
-            msg = await client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=500,
-                temperature=0,
-                messages=[{"role": "user", "content": full_prompt}],
-            )
-            r = msg.content[0].text.strip()
-            if r.startswith("```"):
-                r = r.split("```")[1]
-                if r.startswith("json"):
-                    r = r[4:]
-                r = r.strip()
-            return r
+        score_big_raw: Optional[int] = None
+        score_fast_raw: Optional[int] = None
 
-        raw = await _call()
-        try:
-            result = json.loads(raw)
-        except json.JSONDecodeError as je:
-            logger.warning(
-                "JSON parse failed for '%s': %s — retrying with strict instruction",
-                title[:60], je,
+        if category == "BIG":
+            ai_result = await _run_haiku_scoring(client, SCORING_PROMPT, big_kwargs, title)
+            score_big_raw = int(ai_result.get("score", 0))
+        elif category == "FAST":
+            ai_result = await _run_haiku_scoring(
+                client, FAST_SCORING_PROMPT, fast_kwargs, title, fallback_type="short",
             )
-            strict = (
-                "КРИТИЧНО: верни СТРОГО валидный JSON. Все кавычки внутри строк "
-                "значений ЭКРАНИРУЙ обратным слешем (\\\"). Не добавляй текст до "
-                "или после JSON. Не используй markdown."
+            score_fast_raw = int(ai_result.get("score", 0))
+        else:  # DUAL — оба промпта параллельно
+            big_result, fast_result = await asyncio.gather(
+                _run_haiku_scoring(client, SCORING_PROMPT, big_kwargs, title),
+                _run_haiku_scoring(
+                    client, FAST_SCORING_PROMPT, fast_kwargs, title,
+                    fallback_type="short",
+                ),
             )
-            try:
-                raw2 = await _call(strict)
-                result = json.loads(raw2)
-            except (json.JSONDecodeError, Exception) as je2:
-                logger.warning(
-                    "JSON parse failed twice for '%s': %s — fallback score=5",
-                    title[:60], je2,
-                )
-                scope_unclear = bool(scope_flags) or bool(open_flags) or bool(tech_flags)
-                return {
-                    "score": 6, "is_ai": is_ai,
-                    "reason": "[json_failed] fallback: не удалось распарсить JSON от Claude",
-                    "hard_reject": False, "scope_unclear": scope_unclear,
-                    "no_code_required": no_code, "site_category": site_category,
-                    "hire_rate_penalty": False, "hired_percent": hired_percent,
-                    "critical_unknowns": critical_unknowns,
-                    "order_type": "medium",
-                    "breakdown": {},
-                }
+            score_big_raw = int(big_result.get("score", 0))
+            score_fast_raw = int(fast_result.get("score", 0))
+            # Выбор: оба ≥7 → больший (FAST при равенстве); один ≥7 → его; иначе → больший.
+            if score_big_raw >= 7 and score_fast_raw >= 7:
+                if score_fast_raw >= score_big_raw:
+                    ai_result, dual_chosen = fast_result, "FAST"
+                else:
+                    ai_result, dual_chosen = big_result, "BIG"
+            elif score_big_raw >= 7:
+                ai_result, dual_chosen = big_result, "BIG"
+            elif score_fast_raw >= 7:
+                ai_result, dual_chosen = fast_result, "FAST"
+            elif score_big_raw >= score_fast_raw:
+                ai_result, dual_chosen = big_result, "BIG"
+            else:
+                ai_result, dual_chosen = fast_result, "FAST"
+            logger.info(
+                "DualMerge [%s]: BIG=%d FAST=%d → chosen=%s",
+                title[:60], score_big_raw, score_fast_raw, dual_chosen,
+            )
 
-        score = int(result.get("score", 0))
-        is_ai_final = bool(result.get("is_ai", is_ai)) or is_ai
-        reason = result.get("reason", "")
-        breakdown = result.get("breakdown", {})
+        score = int(ai_result.get("score", 0))
+        is_ai_final = bool(ai_result.get("is_ai", is_ai)) or is_ai
+        reason = ai_result.get("reason", "")
+        breakdown = ai_result.get("breakdown", {})
 
         # P3.1: тип заказа для воронки short/long
-        order_type = result.get("type", "medium")
+        order_type = ai_result.get("type", "medium")
         if order_type not in ("short", "medium", "long"):
             order_type = "medium"
+        # FAST-категория всегда short
+        if category == "FAST":
+            order_type = "short"
 
         scope_unclear = bool(scope_flags) or bool(open_flags) or bool(tech_flags)
 
@@ -1470,7 +1868,7 @@ async def score_project(
             )
 
         # Штраф за несоответствие бюджета и скоупа
-        bsm_penalty, bsm_reason = detect_budget_scope_mismatch(title, description, limit or wanted)
+        bsm_penalty, bsm_reason = detect_budget_scope_mismatch(title, description, budget_limit_eff)
         if bsm_penalty:
             old_score = score
             score = max(0, score + bsm_penalty)
@@ -1510,9 +1908,29 @@ async def score_project(
                 title[:60], old_score, score, grey_reason,
             )
 
+        # === v3: усиления штрафов ===
+        for detector_fn, detector_args, label in (
+            (detect_terminology_mismatch, (title, description), "TerminologyMismatch"),
+            (detect_github_required, (title, description), "GithubRequired"),
+            (detect_nda_collector, (title, description, hired_percent), "NDACollector"),
+            (detect_streaming_low_budget, (title, description, budget_limit_eff), "StreamingLowBudget"),
+            (detect_enterprise_scope_low_budget, (title, description, budget_limit_eff), "EnterpriseScopeLowBudget"),
+            (detect_domain_expertise, (title, description), "DomainExpertise"),
+        ):
+            pen, pen_reason = detector_fn(*detector_args)
+            if pen:
+                old_score = score
+                score = max(0, score + pen)
+                reason = f"{reason}; {pen_reason}" if reason else pen_reason
+                logger.info(
+                    "%s [%s]: %d→%d — %s",
+                    label, title[:60], old_score, score, pen_reason,
+                )
+
         logger.info(
-            "Score [%s]: %d (ai=%s, no_code=%s) — %s",
-            title[:60], score, is_ai_final, bool(no_code), reason,
+            "Score [%s] cat=%s big=%s fast=%s final=%d (ai=%s, no_code=%s) — %s",
+            title[:60], category, score_big_raw, score_fast_raw,
+            score, is_ai_final, bool(no_code), reason,
         )
         return {
             "score": score,
@@ -1527,6 +1945,9 @@ async def score_project(
             "hired_percent": hired_percent,
             "critical_unknowns": critical_unknowns,
             "order_type": order_type,
+            "category": category,
+            "score_big": score_big_raw,
+            "score_fast": score_fast_raw,
         }
     except Exception as exc:
         logger.warning("Scoring error for '%s': %s", title[:60], exc)
@@ -1536,6 +1957,7 @@ async def score_project(
             "site_category": "not_site",
             "hire_rate_penalty": False, "hired_percent": hired_percent,
             "breakdown": {},
+            "category": category, "score_big": None, "score_fast": None,
         }
 
 
