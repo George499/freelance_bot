@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import subprocess
 import sys
@@ -76,16 +77,23 @@ async def on_startup(
 ):
     await bot.me()
 
-    webhook_url = "{url}/webhook".format(url=base_url)
-    webhook_info = await bot.get_webhook_info()
-    if webhook_info.url != webhook_url:
+    use_polling = not bool(base_url)
+    webhook_url = "" if use_polling else "{url}/webhook".format(url=base_url)
+
+    if use_polling:
+        # Polling: убираем webhook чтобы TG не пытался слать апдейты на старый URL.
         await bot.delete_webhook(drop_pending_updates=True)
+    else:
+        webhook_info = await bot.get_webhook_info()
+        if webhook_info.url != webhook_url:
+            await bot.delete_webhook(drop_pending_updates=True)
 
     config.bot_username = bot._me.username
 
     await database_connection(config, persist=True)
 
-    await bot.set_webhook(webhook_url)
+    if not use_polling:
+        await bot.set_webhook(webhook_url)
 
     jobs = [
         {"func": get_upwork_projects, "minutes": 15},
@@ -114,7 +122,7 @@ async def on_startup(
         "✅ <b>Бот запущен</b>\n"
         f"Время: <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>\n"
         f"Версия: <code>{git_sha}</code>\n"
-        f"Webhook: <code>{webhook_url}</code>\n"
+        f"Режим: <code>{'long polling' if use_polling else 'webhook ' + webhook_url}</code>\n"
         f"Фильтр: {'Claude haiku' if config.anthropic_api_key else 'выключен'}"
     )
     try:
@@ -150,11 +158,7 @@ def create_bot(config: Settings) -> Bot:
     )
 
 
-def main():
-    config = Settings()
-
-    bot = create_bot(config)
-
+def _build_dispatcher(config: Settings, bot: Bot) -> tuple[Dispatcher, AsyncIOScheduler]:
     dp = Dispatcher()
     dp["base_url"] = config.app_base_url
     dp["config"] = config
@@ -167,6 +171,19 @@ def main():
 
     scheduler = AsyncIOScheduler()
     dp["scheduler"] = scheduler
+    return dp, scheduler
+
+
+async def _run_polling(config: Settings) -> None:
+    bot = create_bot(config)
+    dp, _ = _build_dispatcher(config, bot)
+    logging.getLogger(__name__).info("Стартую в режиме long polling")
+    await dp.start_polling(bot)
+
+
+def _run_webhook(config: Settings) -> None:
+    bot = create_bot(config)
+    dp, _ = _build_dispatcher(config, bot)
 
     app = Application()
     app["bot"] = bot
@@ -179,6 +196,14 @@ def main():
     setup_application(app, dp, bot=bot)
 
     run_app(app, host=config.app_host, port=config.app_port)
+
+
+def main():
+    config = Settings()
+    if config.app_base_url:
+        _run_webhook(config)
+    else:
+        asyncio.run(_run_polling(config))
 
 
 if __name__ == "__main__":

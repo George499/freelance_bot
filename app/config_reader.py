@@ -32,7 +32,9 @@ class Settings(BaseSettings):
     tg_admin: int
     bot_username: str = "your_bot"
 
-    app_base_url: str
+    # Webhook-параметры. Если app_base_url пуст — бот идёт в long polling
+    # (для VPS без публичного домена / TLS).
+    app_base_url: str = ""
     app_host: str = "localhost"
     app_port: int = 8081
 
