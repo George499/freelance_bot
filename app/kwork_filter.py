@@ -548,11 +548,21 @@ _AUTHORSHIP_RE = re.compile("|".join(AUTHORSHIP_MARKERS), re.IGNORECASE)
 
 
 HARD_REJECT_KEYWORDS = (
-    r"\b1c[\s-]*битрикс\b", r"\bбитрикс\b", r"\bbitrix\b",
-    r"\bwordpress\b", r"\bвордпресс\b", r"\bна\s+wp\b",
-    r"\bтильд[аеу]\b", r"\btilda\b",
+    # Русские склонения через \w* (исправление: \bбитрикс\b не ловил 'битриксе/битрикса')
+    r"\b1c[\s-]*битрикс\w*", r"\bбитрикс\w*", r"\bbitrix\b",
+    r"\bwordpress\b", r"\bвордпресс\w*", r"\bна\s+wp\b",
+    r"\bтильд\w+", r"\btilda\b",
     r"\bjoomla\b", r"\bopencart\b", r"\bshopify\b", r"\bwix\b",
-    r"\bdrupal\b",
+    r"\bdrupal\b", r"\bдрупал\w*",
+    # v4 hot-fix: редкие CMS которые проскакивали (наблюдённые кейсы)
+    r"\bmodx\b", r"\bмодекс\w*",
+    r"\bmagento\b", r"\bмаджент\w*",
+    r"\bprestashop\b", r"\bпрестошоп\w*",
+    r"\boctober[\s-]?cms\b",
+    r"\bdle\b\s+(сайт|разраб|админ)|datalife\s+engine",
+    r"\bumi[\s.-]?cms\b",
+    r"\binstantcms\b|инстант[\s-]?cms",
+    r"\bhostcms\b",
     r"\blaravel\b", r"\bsymfony\b", r"\byii[\s-]?2?\b", r"\bcodeigniter\b",
     # v4 2.7: PHP жёстко — любое явное упоминание PHP как стека
     r"\bна\s+(чистом\s+|чисто\s+)?php\b",
