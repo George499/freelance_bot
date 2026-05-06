@@ -12,6 +12,7 @@ from selectolax.lexbor import LexborHTMLParser as htmlp
 from app.bot.keyboards import apply_button
 from app.config_reader import Settings
 from app.db.tables import FreelancePlatform, Project
+from app.farm_mode import is_farm_mode_active
 from app.kwork_filter import (
     MONTHLY_QUOTA,
     generate_offer_claude,
@@ -122,6 +123,9 @@ def _format_kwork_message(
     category: str | None = None,
     score_big: int | None = None,
     score_fast: int | None = None,
+    offers_count: int = 0,
+    buyer_achievement_names: list[str] | None = None,
+    farm_mode_active: bool = False,
 ) -> str:
     unknowns = critical_unknowns or []
     is_quali = len(unknowns) >= QUALI_UNKNOWNS_THRESHOLD
@@ -130,23 +134,35 @@ def _format_kwork_message(
     if category == "DUAL" and score_big is not None and score_fast is not None:
         score_suffix = f" (BIG={score_big}, FAST={score_fast})"
 
+    # v4 6.1: метки конкуренции после скора
+    competition_marks = []
+    if offers_count > 0:
+        competition_marks.append(f"📨 {offers_count}")
+    if buyer_achievement_names:
+        # Берём первую (самую заметную) ачивку
+        competition_marks.append(f"🏅 {buyer_achievement_names[0].lower()}")
+    competition_suffix = " " + " ".join(f"[{m}]" for m in competition_marks) if competition_marks else ""
+
     # P2.4: GO / QUALI / Пограничный / Пропуск роутинг
     if respond:
         if is_quali:
-            status = f"🟡 QUALI — скор {score}/10{score_suffix} (ответить, но сначала уточнить)"
+            status = f"🟡 QUALI — скор {score}/10{score_suffix}{competition_suffix} (ответить, но сначала уточнить)"
         elif score >= 9:
-            status = f"🔥 GO — скор {score}/10{score_suffix}"
+            status = f"🔥 GO — скор {score}/10{score_suffix}{competition_suffix}"
         else:
-            status = f"🟢 GO — скор {score}/10{score_suffix}"
+            status = f"🟢 GO — скор {score}/10{score_suffix}{competition_suffix}"
     elif score >= TELEGRAM_SCORE_THRESHOLD:
         if is_quali:
-            status = f"🟡 QUALI — скор {score}/10{score_suffix} (пограничный + 2+ неизвестных)"
+            status = f"🟡 QUALI — скор {score}/10{score_suffix}{competition_suffix} (пограничный + 2+ неизвестных)"
         else:
-            status = f"👀 Пограничный — скор {score}/10{score_suffix} (ждём лучшего)"
+            status = f"👀 Пограничный — скор {score}/10{score_suffix}{competition_suffix} (ждём лучшего)"
     else:
-        status = f"🔴 Пропуск — скор {score}/10{score_suffix}"
+        status = f"🔴 Пропуск — скор {score}/10{score_suffix}{competition_suffix}"
 
     cat_badge = CATEGORY_BADGES.get(category) if category else None
+    # v4 раздел 9: метка отзыв-фарма для FAST
+    if cat_badge and farm_mode_active and category == "FAST":
+        cat_badge = f"{cat_badge} [⚡ ОТЗЫВ-ФАРМ]"
     header = f"{cat_badge}  {status}" if cat_badge else status
 
     badges = []
@@ -171,6 +187,14 @@ def _format_kwork_message(
     if unknowns:
         unknowns_block = "❓ Неизвестные: " + html.quote("; ".join(unknowns)) + "\n\n"
 
+    # v4 раздел 9: подвал для BIG/DUAL когда farm-mode активен
+    farm_footer = ""
+    if farm_mode_active and category in ("BIG", "DUAL"):
+        farm_footer = (
+            "\n\n💡 Сейчас приоритет — FAST для отзывов. "
+            "BIG только если идеальный матч."
+        )
+
     return (
         f"{header}  {badges_line}\n\n"
         f"<b>{html.quote(title)}</b>\n\n"
@@ -180,7 +204,8 @@ def _format_kwork_message(
         f"Решение: {html.quote(decision_reason)}\n"
         f"Причина скора: {html.quote(score_reason)}\n\n"
         f"📊 Квота: {quota['remaining']}/{MONTHLY_QUOTA} осталось, "
-        f"{quota['days_left']} дн. до пополнения, режим: {quota['pace']}\n\n"
+        f"{quota['days_left']} дн. до пополнения, режим: {quota['pace']}"
+        f"{farm_footer}\n\n"
         f"🔗 {url}"
     )
 
@@ -312,6 +337,12 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             if not first_project_logged:
                 logger.info("DEBUG project sample: %s", item)
                 first_project_logged = True
+            achievements = item.get("achievements_list") or []
+            achievement_names = [
+                a.get("name", "")
+                for a in achievements
+                if isinstance(a, dict) and a.get("name")
+            ]
             result.append(
                 {
                     "id": item.get("id"),
@@ -322,6 +353,8 @@ async def get_kwork_projects(bot: Bot, config: Settings):
                     "offers": item.get("offers", 0),
                     "time_left": item.get("time_left", 0),
                     "hired_percent": _extract_hired_percent(item),
+                    "buyer_achievements_count": len(achievements),
+                    "buyer_achievements_names": achievement_names,
                 }
             )
         return result
@@ -384,7 +417,10 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         deadline_str = f"{time_left // 86400} дней" if time_left else "не указан"
 
         hired_percent = project.get("hired_percent")
+        buyer_achievements_count = project.get("buyer_achievements_count", 0)
+        buyer_achievements_names = project.get("buyer_achievements_names", [])
 
+        farm_active = is_farm_mode_active()
         score_result = await score_project(
             title=title,
             description=desc,
@@ -393,6 +429,8 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             responses_count=project.get("offers", 0),
             anthropic_api_key=config.anthropic_api_key,
             hired_percent=hired_percent,
+            buyer_achievements=buyer_achievements_count,
+            farm_mode_active=farm_active,
         )
 
         # Hard reject — тишина, только в логи
@@ -479,6 +517,9 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             category=score_result.get("category"),
             score_big=score_result.get("score_big"),
             score_fast=score_result.get("score_fast"),
+            offers_count=offers_count,
+            buyer_achievement_names=buyer_achievements_names,
+            farm_mode_active=farm_active,
         )
 
         if respond:

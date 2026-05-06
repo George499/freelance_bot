@@ -25,6 +25,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, Message
 from aiogram.exceptions import TelegramBadRequest
 
+from app.farm_mode import is_farm_mode_active, set_farm_mode
 from app.quota import (
     MONTHLY_QUOTA,
     get_days_until_refill,
@@ -130,6 +131,40 @@ async def cmd_resettoday(message: Message):
         f"✅ Дневной счётчик сброшен. Использовано сегодня: "
         f"<b>{state['responses_used_today']}</b>"
     )
+
+
+@quota_router.message(Command("farm_on"))
+async def cmd_farm_on(message: Message):
+    """Включить режим Отзыв-фарм — приоритет простых заказов для набора отзывов."""
+    set_farm_mode(True)
+    await message.answer(
+        "⚡ <b>Режим Отзыв-фарм включён</b>\n\n"
+        "Активные изменения:\n"
+        "• Минимальный бюджет в FAST снижен (любая копейка идёт в скоринг)\n"
+        "• Бонус +2 за признаки гарантированной приёмки\n"
+        "• FAST-уведомления получают метку [⚡ ОТЗЫВ-ФАРМ]\n"
+        "• В BIG-уведомлениях напоминание о приоритете FAST\n\n"
+        "Выключить: /farm_off"
+    )
+
+
+@quota_router.message(Command("farm_off"))
+async def cmd_farm_off(message: Message):
+    """Выключить режим Отзыв-фарм."""
+    set_farm_mode(False)
+    await message.answer(
+        "✅ <b>Режим Отзыв-фарм выключен</b>\n\n"
+        "Возврат к стандартному скорингу. Включить обратно: /farm_on"
+    )
+
+
+@quota_router.message(Command("farm_status"))
+async def cmd_farm_status(message: Message):
+    active = is_farm_mode_active()
+    if active:
+        await message.answer("⚡ Отзыв-фарм: <b>ВКЛЮЧЁН</b>. Выключить: /farm_off")
+    else:
+        await message.answer("Отзыв-фарм: выключен. Включить: /farm_on")
 
 
 @quota_router.callback_query(F.data.startswith("kw_sent:"))

@@ -552,9 +552,15 @@ HARD_REJECT_KEYWORDS = (
     r"\bwordpress\b", r"\bвордпресс\b", r"\bна\s+wp\b",
     r"\bтильд[аеу]\b", r"\btilda\b",
     r"\bjoomla\b", r"\bopencart\b", r"\bshopify\b", r"\bwix\b",
-    r"\blaravel\b",
-    r"\bна\s+php\s+(сайт|проект|разработ)",
-    r"\bphp[\s-]*разработчик\s+нужен",
+    r"\bdrupal\b",
+    r"\blaravel\b", r"\bsymfony\b", r"\byii[\s-]?2?\b", r"\bcodeigniter\b",
+    # v4 2.7: PHP жёстко — любое явное упоминание PHP как стека
+    r"\bна\s+(чистом\s+|чисто\s+)?php\b",
+    r"\bphp\s+(сайт|проект|разработ|приложен|сервер|api|бэкенд|backend|fullstack|fullstak|fullstak|веб[\s-]?приложен)",
+    r"\bвеб[\s-]?приложен\w+\s+на\s+php\b",
+    r"\bbackend\s+на\s+php\b|\bбэкенд\s+на\s+php\b",
+    r"\bphp[\s-]*разработчик\s+нужен|нужен\s+php[\s-]*разработчик",
+    r"\bстек:?\s*php\b",
     r"\bнужен\s+django\s+разработчик",
     r"\bremnawave\b", r"\bmarzban\b",
     r"\b3x[\s-]*ui\b", r"\bxray[\s-]*panel\b",
@@ -916,6 +922,195 @@ def detect_budget_scope_mismatch(
         return -2, reason
 
     return 0, ""
+
+
+# === v4 раздел 7: терминологическая специфичность ===
+
+QUALIFYING_TERMS = (
+    # Backend
+    r"\bnestjs\b", r"\bnest\.?js\b", r"\bfastapi\b", r"\bgrpc\b", r"\bgraphql\b",
+    r"\bapollo\b", r"oauth\s+flow", r"\bsaml\b",
+    r"\bidempotenc\w+", r"\brate[\s-]?limit", r"queue\s+worker",
+    r"\bcelery\b", r"\bbullmq\b", r"\bsharding\b", r"\breplicat\w+",
+    r"\bpgvector\b", r"redis\s+pub[\s-]?sub",
+    # AI/ML
+    r"\brag\b\s+(система|подход|архитектур|пайплайн)|retrieval[\s-]?augmented",
+    r"function\s+calling|tool[\s-]?use",
+    r"embeddings?\b|эмбеддинг", r"vector\s+(db|database|store)|векторн\w+\s+(бд|база)",
+    r"fine[\s-]?tuning|дообучен", r"\blora\b",
+    r"semantic\s+search", r"\blangchain\b", r"\bllama[\s-]?index\b",
+    # Infrastructure
+    r"docker[\s-]?compose", r"\bkubernetes\b|\bk8s\b", r"\bterraform\b", r"\bansible\b",
+    r"\bprometheus\b", r"\bgrafana\b", r"\bsentry\b", r"\bdatadog\b", r"\bopentelemetry\b",
+    r"ci/cd\s+pipeline|ci[\s-]?cd[\s-]?пайплайн", r"blue[\s-]?green",
+    # Frontend
+    r"server[\s-]?sent\s+events|\bsse\b",
+    r"\bwebsocket", r"server\s+components|\brsc\b",
+    r"\bsuspense\b", r"app\s+router", r"\bhydration\b",
+    r"web\s+vitals", r"schema\.org", r"\bhreflang\b",
+    # Telegram
+    r"\baiogram\b", r"telegram\s+mini\s+app|tg[\s-]?mini[\s-]?app|tma\b",
+    r"\bmtproto\b", r"\buserbot\b",
+    # CMS/специализированное
+    r"\bstrapi\b", r"\bsanity\b", r"headless\s+cms", r"\bdirectus\b", r"\bpayload\s+cms\b",
+    # Платежи и интеграции
+    r"юkassa\s+marketplace|recurrent\s+(payment|billing)",
+    r"\bsplitt?ing\b\s+(платеж|payments?)", r"\bescrow\b", r"webhook\s+sign",
+)
+_QUALIFYING_RE = re.compile("|".join(QUALIFYING_TERMS), re.IGNORECASE)
+
+MASS_TERMS = (
+    r"\bбот\b", r"телеграм[\s-]?бот", r"\bтг[\s-]?бот",
+    r"\bсайт\b", r"\bлендинг", r"\blanding\b",
+    r"\bмагазин\b", r"интернет[\s-]?магазин",
+    r"\bпарсер\b", r"\bскрипт\b",
+    r"\bавтоматизаци\w+", r"\bчат[\s-]?бот",
+    r"\bнейросет\w+", r"искусственн\w+\s+интеллект", r"\bии\b",
+    r"\bчат[\s-]?гпт\b", r"\bchatgpt\b",
+    r"\bопенаи\b", r"\bopenai\b", r"\bgpt\b",
+)
+_MASS_RE = re.compile("|".join(MASS_TERMS), re.IGNORECASE)
+
+
+def detect_terminology_specificity(title: str, description: str) -> tuple[int, str]:
+    """v4 раздел 7: терминологическая специфичность.
+
+    Returns:
+        (modifier, reason)
+        - 3+ уникальных квалифицирующих маркеров → +2 (профессиональная задача)
+        - Только массовые без квалифицирующих → -1 (заказ для автооткликов)
+        - Иначе 0
+    """
+    text = f"{title}\n{description}"
+    qual_matches = {m.group(0).lower() for m in _QUALIFYING_RE.finditer(text)}
+    mass_matches = {m.group(0).lower() for m in _MASS_RE.finditer(text)}
+
+    if len(qual_matches) >= 3:
+        sample = ", ".join(sorted(qual_matches)[:5])
+        return 2, f"квалифицирующая терминология ({len(qual_matches)} терминов: {sample}): +2"
+
+    if mass_matches and not qual_matches:
+        sample = ", ".join(sorted(mass_matches)[:3])
+        return -1, f"только массовая терминология ({sample}) без квалифицирующих: -1"
+
+    return 0, ""
+
+
+# === v4 6.1: модификатор скора по конкурентной среде ===
+
+def compute_competition_modifier(
+    responses_count: int,
+    hired_percent: Optional[int],
+    buyer_achievements: int,
+) -> tuple[int, list[str]]:
+    """v4 6.1: модификатор скора по числу откликов + уровню покупателя.
+
+    Args:
+        responses_count: число откликов на момент первой проверки.
+        hired_percent: hire_rate заказчика (0-100) или None.
+        buyer_achievements: число медалек покупателя (из achievements_list).
+
+    Returns:
+        (modifier, reasons) — суммарный модификатор и список применённых правил.
+
+    Шкала откликов:
+        0-5    → +1 (первая волна)
+        6-15   → 0
+        16-30  → -1 (среднее наполнение)
+        31+    → -3 (переполнено)
+
+    Шкала покупателя:
+        0 ачивок + hire_rate < 10%  → -2 (вероятный собиратель КП)
+        0 ачивок + hire_rate 10-30% → 0 (нейтрально)
+        1 ачивка                    → +1
+        2+ ачивок                   → +2 (топ-покупатель)
+    """
+    modifier = 0
+    reasons: list[str] = []
+
+    # Отклики
+    if responses_count <= 5:
+        modifier += 1
+        reasons.append(f"первая волна ({responses_count} откликов): +1")
+    elif responses_count <= 15:
+        pass
+    elif responses_count <= 30:
+        modifier -= 1
+        reasons.append(f"среднее наполнение ({responses_count} откликов): -1")
+    else:
+        modifier -= 3
+        reasons.append(f"переполнено ({responses_count} откликов): -3")
+
+    # Уровень покупателя
+    if buyer_achievements == 0:
+        if hired_percent is not None and hired_percent < 10:
+            modifier -= 2
+            reasons.append(f"без медалек + hire_rate {hired_percent}%: -2 (собиратель КП)")
+    elif buyer_achievements == 1:
+        modifier += 1
+        reasons.append("медалька покупателя: +1")
+    elif buyer_achievements >= 2:
+        modifier += 2
+        reasons.append(f"{buyer_achievements} медальки покупателя: +2 (топ)")
+
+    return modifier, reasons
+
+
+# === v4 2.2: hard reject — автоматизация бронирования с обходом ===
+# Триггер: 2+ из 4 категорий маркеров → hard reject.
+
+_BOOKING_ACTION_RE = re.compile(
+    r"\bбронировани\w+|\bбронир\w+|\bзаписат\w+\s+(на|в)|\bрегистрац\w+\s+(на|в|онлайн)|"
+    r"\bуспе(ть|вать)\s+(забронировать|записаться|зарегистрироват)|"
+    r"получить\s+(место|слот|талон|очеред)|"
+    r"\bавтоматическ\w+\s+(бронир\w*|записыва)|"
+    r"\bbooking[\s-]?bot|appointment[\s-]?(bot|booking)",
+    re.IGNORECASE,
+)
+_BOOKING_BYPASS_RE = re.compile(
+    r"пройти\s+капч|обход\w*\s+капч|\bcaptcha[\s-]?solver|"
+    r"\bantibot|антибот|анти[\s-]?капч|"
+    r"ротац\w+\s+ip|пул\s+прокси|фингерпринт|fingerprint",
+    re.IGNORECASE,
+)
+_BOOKING_SPEED_RE = re.compile(
+    r"быстрее\s+(человек|любого)|за\s+секунд|в\s+разы\s+быстрее|"
+    r"мгновенн\w+\s+бронир|первым\s+успе|раньше\s+(всех|других)",
+    re.IGNORECASE,
+)
+_BOOKING_TARGET_RE = re.compile(
+    r"\bгосуслуг|gosuslugi|"
+    r"\bвизов\w+\s+(центр|анкет)|\bvfsglobal|\btlscontact|\bvacprime|"
+    r"\bмемориал|колумбари|"
+    r"\bполиклиник|\bбольниц|запись\s+к\s+врач|"
+    r"\bшкол\w+\s+(запис|регистрац)|\bдетск\w+\s+сад\w+\s+(запис|очеред)|"
+    r"\bпарковк\w+\s+(онлайн|резерв|бронир)|"
+    r"\bштраф\w*\s+(онлайн|оплат)|"
+    r"\bмфц\b|\bросреестр|"
+    r"\bmirzamak|\bаквапарк|\bбассейн\w+\s+(запис|сеанс)",
+    re.IGNORECASE,
+)
+
+
+def detect_booking_automation(title: str, description: str) -> Optional[str]:
+    """v4 2.2: автоматизация бронирования с обходом — hard reject при 2+ из 4 категорий маркеров.
+
+    Категории: action (бронирование/запись), bypass (капча/прокси/антибот),
+    speed (быстрее человека), target (госуслуги/визовые/мемориалы/поликлиники).
+    """
+    text = f"{title}\n{description}"
+    matched = []
+    if _BOOKING_ACTION_RE.search(text):
+        matched.append("действие (бронирование)")
+    if _BOOKING_BYPASS_RE.search(text):
+        matched.append("обход защиты")
+    if _BOOKING_SPEED_RE.search(text):
+        matched.append("преимущество в скорости")
+    if _BOOKING_TARGET_RE.search(text):
+        matched.append("целевой ресурс с конкуренцией среди людей")
+    if len(matched) >= 2:
+        return f"автоматизация бронирования: {' + '.join(matched)} — правовой/этический риск"
+    return None
 
 
 # === v3: усиления BIG-промпта (применяются после Haiku, как post-penalty) ===
@@ -1425,6 +1620,8 @@ PRE-CHECK:
 КАТЕГОРИЯ FAST — быстрые заказы на 1-3 дня работы.
 Цель: отзывы для профиля + покрытие краткосрочных финансовых задач.
 
+{review_farming_block}
+
 ВАЖНО ДЛЯ ОЦЕНКИ:
 - НЕ оценивать в плюс наличие AI-компоненты (для FAST не нужно).
 - НЕ требовать комплексности и fullstack-проекта (это не FAST).
@@ -1649,6 +1846,18 @@ async def _run_haiku_scoring(
             }
 
 
+FAST_FARM_BLOCK = """⚡ РЕЖИМ ОТЗЫВ-ФАРМ АКТИВЕН.
+Цель — набрать отзывы. Простые объективные задачи в приоритете.
+
++2 БОНУС за признаки гарантированной приёмки:
+- объективная задача с измеримым результатом (скрипт работает / парсер вернул правильные данные / файл получен)
+- заказчик технически грамотный (по описанию видно)
+- простая приёмка без длительного тестирования
+- НЕ subjective задача (не "сделайте красиво", не "по вкусу")
+
+При совпадении 2+ из 4 признаков добавь +2 к стартовому скору и явно отметь это в reason."""
+
+
 async def score_project(
     title: str,
     description: str,
@@ -1657,6 +1866,8 @@ async def score_project(
     responses_count: int,
     anthropic_api_key: Optional[str],
     hired_percent: Optional[int] = None,
+    buyer_achievements: int = 0,
+    farm_mode_active: bool = False,
 ) -> Dict:
     default_result = {
         "score": 5, "is_ai": False, "reason": "no API key",
@@ -1677,6 +1888,18 @@ async def score_project(
         return {
             "score": 0, "is_ai": is_ai,
             "reason": f"infobiz/AI-агентство: '{always_hr}'",
+            "hard_reject": True, "scope_unclear": False, "no_code_required": None,
+            "site_category": "not_site",
+            "hire_rate_penalty": False, "hired_percent": hired_percent,
+            "breakdown": {},
+        }
+
+    # v4 2.2: автоматизация бронирования с обходом — hard reject
+    booking_hr = detect_booking_automation(title, description)
+    if booking_hr:
+        logger.info("BookingAutoHardReject [%s]: %s", title[:60], booking_hr)
+        return {
+            "score": 0, "is_ai": is_ai, "reason": booking_hr,
             "hard_reject": True, "scope_unclear": False, "no_code_required": None,
             "site_category": "not_site",
             "hire_rate_penalty": False, "hired_percent": hired_percent,
@@ -1828,6 +2051,7 @@ async def score_project(
         "tech_flags", "tech_penalty",
         "site_category", "site_note",
     )}
+    fast_kwargs["review_farming_block"] = FAST_FARM_BLOCK if farm_mode_active else ""
 
     try:
         client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
@@ -1939,6 +2163,31 @@ async def score_project(
             logger.info(
                 "GreyZonePenalty [%s]: %d→%d — %s",
                 title[:60], old_score, score, grey_reason,
+            )
+
+        # === v4 6.1: модификатор по конкурентной среде ===
+        comp_mod, comp_reasons = compute_competition_modifier(
+            responses_count, hired_percent, buyer_achievements,
+        )
+        if comp_mod != 0:
+            old_score = score
+            score = max(0, min(10, score + comp_mod))
+            comp_reason_str = "; ".join(comp_reasons)
+            reason = f"{reason}; {comp_reason_str}" if reason else comp_reason_str
+            logger.info(
+                "Competition [%s]: %d→%d — %s",
+                title[:60], old_score, score, comp_reason_str,
+            )
+
+        # === v4 раздел 7: терминологическая специфичность ===
+        term_mod, term_reason = detect_terminology_specificity(title, description)
+        if term_mod != 0:
+            old_score = score
+            score = max(0, min(10, score + term_mod))
+            reason = f"{reason}; {term_reason}" if reason else term_reason
+            logger.info(
+                "Terminology [%s]: %d→%d — %s",
+                title[:60], old_score, score, term_reason,
             )
 
         # === v3: усиления штрафов ===

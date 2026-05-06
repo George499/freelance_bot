@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     # на extra_forbidden когда переменная задана в .env.
     anthropic_base_url: Optional[str] = None
 
+    # v4 раздел 9: первичное значение режима отзыв-фарма при отсутствии
+    # farm_mode.json. Поле читается напрямую через os.environ в farm_mode.py;
+    # объявлено здесь чтобы pydantic не падал на extra.
+    review_farming_mode_default: Optional[str] = None
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
