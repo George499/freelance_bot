@@ -573,6 +573,12 @@ HARD_REJECT_KEYWORDS = (
     # Senler — основная работа (не интеграция через API)
     r"\bsenler\b\s+(как\s+основ|основная|настрой|разработ)",
     r"автоворонк\w+\s+(на\s+|в\s+)?senler",
+    # v4 Идея 34: Bitrix24 модули (не интеграция через API) и YClients основная
+    r"модул\w+\s+(для|в|под)\s+bitrix\s*24",
+    r"bitrix\s*24\s+(приложен|разработ|модул|настр)",
+    r"приложен\w+\s+(для|в)\s+bitrix\s*24",
+    r"\byclients\b\s+(как\s+основ|основная|разработ\w+\s+интеграц|настройк)",
+    r"работа\s+(с|в)\s+yclients\s+(как|основн)",
     r"\blaravel\b", r"\bsymfony\b", r"\byii[\s-]?2?\b", r"\bcodeigniter\b",
     # v4 2.7: PHP жёстко — любое явное упоминание PHP как стека
     r"\bна\s+(чистом\s+|чисто\s+)?php\b",
@@ -598,6 +604,369 @@ HARD_REJECT_KEYWORDS = (
     r"\bunity\b\s+разработ", r"\bunreal\b\s+engine",
 )
 _HARD_REJECT_RE = re.compile("|".join(HARD_REJECT_KEYWORDS), re.IGNORECASE)
+
+
+# === v4 Идея 32: расширенный hard reject парсинга коммерческих источников ===
+
+# Прямые домены/имена — hard reject при упоминании в контексте парсинга
+COMMERCIAL_PARSING_TARGETS = (
+    # Маркетплейсы и каталоги
+    r"\b(wildberries|вайлдберриз|вб)\b",
+    r"\bozon\b|\bозон\b",
+    r"\bavito\b|\bавито\b",
+    r"\baliexpress\b|\bалиэкспресс|\baliexp\b",
+    r"\btaobao\b|\bтаобао",
+    r"\betsy\b|\bэтси\b",
+    r"\bamazon\b|\bамазон",
+    # B2B каталоги (российские)
+    r"\betm\.ru|\betm[\s-]?каталог|\bauvix|\bcvg\b|\bpult[\s-]?av",
+    # Авто
+    r"\bencar\b|\bautohome\b|\bdcarauto|\bautoria",
+    # Недвижимость
+    r"\bциан\b|\bcian\.ru|\bдомклик\b|\bметр[\s-]?квадрат",
+    # Новости
+    r"\bbloomberg\b|\breuters\b|\brbk\.ru|\bкоммерсант|\bлента\.ру|\bforbes\b",
+    r"\btechcrunch\b|the\s+information",
+    # Соц. сети и платформы
+    r"\bтикток\b|\btiktok\b\s+(парс|спарс|скрэйп)",
+    r"\binstagram\b\s+(парс|спарс|скрэйп)",
+    r"\byoutube\b\s+(парс|спарс|скрэйп|скачать|yt[\s-]?dlp)",
+    r"\blinkedin\b\s+(парс|спарс|профил|контакт)",
+    r"\bheadhunter\b\s+(парс|спарс|резюм|вакансий\s+массов)",
+    r"\bhh\.ru\b\s+(парс|спарс)\s+(резюм|вакансий)",
+)
+_COMMERCIAL_PARSING_TARGETS_RE = re.compile("|".join(COMMERCIAL_PARSING_TARGETS), re.IGNORECASE)
+
+# Контексты в которых парсинг почти всегда означает коммерческий источник
+COMMERCIAL_PARSING_CONTEXTS = (
+    r"парс\w+\s+товар\w+\s+(для|в)\s+(интернет[\s-]?магазин|свой\s+магазин|сайт)",
+    r"парс\w+\s+цен\w+\s+(конкурент|маркетплейс|чужих)",
+    r"сбор\s+данных\s+по\s+недвижимост",
+    r"парс\w+\s+автомобил\w+\s+(из\s+(корея|кореи|кит))",
+    r"парс\w+\s+новост\w+\s+(популярн|крупн)",
+    r"база\s+контактов\s+youtube",
+    r"парс\w+\s+резюм\s+с\s+(hh|headhunter|linkedin)",
+)
+_COMMERCIAL_PARSING_CONTEXTS_RE = re.compile("|".join(COMMERCIAL_PARSING_CONTEXTS), re.IGNORECASE)
+
+# "API есть но лимит/медленно" — сильный сигнал серой зоны
+API_BYPASS_FLAGS = (
+    r"api\s+есть\s+но\s+(лимит|медленн|неудобн|плат|дорог)",
+    r"\bобход\w+\s+api[\s-]?лимит",
+    r"api\s+не\s+(подходит|устраивает)\s+парс",
+    r"вместо\s+api\s+парс\w+",
+)
+_API_BYPASS_RE = re.compile("|".join(API_BYPASS_FLAGS), re.IGNORECASE)
+
+
+def detect_commercial_parsing_v2(title: str, description: str) -> Optional[str]:
+    """v4 Идея 32: hard reject парсинга коммерческих источников.
+
+    Логика:
+      1. Прямое упоминание коммерческого источника (Wildberries/Циан/Encar/etm.ru)
+         + парсинг-намерение → hard reject (whitelist игнорируется, эти источники
+         серые по умолчанию).
+      2. Контекстный паттерн (товары для магазина) → hard reject, но whitelist
+         может спасти (свой сайт).
+      3. "API есть но лимит" → hard reject.
+    """
+    text = f"{title}\n{description}"
+
+    has_parsing_intent = bool(
+        re.search(r"\bпарс\w+|\bспарс\w+|\bскрэйп|\bscrap|сбор\s+данных", text, re.IGNORECASE)
+    )
+    if not has_parsing_intent:
+        return None
+
+    # 1. Прямые targets — whitelist не отменяет (источники сами по себе серые)
+    direct = _COMMERCIAL_PARSING_TARGETS_RE.search(text)
+    if direct:
+        return f"парсинг коммерческого источника '{direct.group(0)}' — нарушение ToS"
+
+    # 2/3. Косвенные — whitelist спасает
+    if _PARSING_OK_RE.search(text):
+        return None
+
+    context = _COMMERCIAL_PARSING_CONTEXTS_RE.search(text)
+    if context:
+        return f"парсинг в коммерческом контексте: '{context.group(0)}'"
+
+    bypass = _API_BYPASS_RE.search(text)
+    if bypass:
+        return f"парсинг в обход API ('{bypass.group(0)}') — серая зона"
+
+    return None
+
+
+# === v4 Идея 35: несоответствие профиля fullstack ===
+
+PROFILE_MISMATCH_PATTERNS = (
+    # Сисадминство для чужих хостингов
+    (
+        re.compile(
+            r"(аудит|настройк\w+|оптимизац\w+|миграц\w+)[\s\S]{0,80}?"
+            r"(beget|reg\.ru|timeweb|firstvds|cpanel|ispmanager|fastpanel|hostland)|"
+            r"(beget|reg\.ru|timeweb|cpanel|ispmanager|fastpanel)[\s\S]{0,80}?"
+            r"(настройк|оптимизац|аудит)",
+            re.IGNORECASE,
+        ),
+        "сисадминство для чужих хостингов",
+    ),
+    # Аудит существующих систем без разработки
+    (
+        re.compile(
+            r"\bаудит\s+(сайт|систем|приложен|инфраструктур|кода)|"
+            r"провести\s+аудит|нужен\s+аудит",
+            re.IGNORECASE,
+        ),
+        "аудит без разработки",
+    ),
+    # 1С-программирование (любого вида)
+    (
+        re.compile(
+            r"\b1с\s+(программ|разработ|конфигурац|обработк|отчёт)|"
+            r"\b1с[\s-]?предприят|программист\s+1с",
+            re.IGNORECASE,
+        ),
+        "1С-программирование",
+    ),
+    # Desktop native
+    (
+        re.compile(
+            r"\bdelphi\b|\bpascal\s+(native|разработ)|\bvb6\b|\bvisual\s+basic\b|"
+            r"\bwpf\b\s+приложен|\bwinforms?\b",
+            re.IGNORECASE,
+        ),
+        "desktop native (Delphi/Pascal/WPF/WinForms)",
+    ),
+    # Native mobile (хотя в HARD_REJECT уже есть, тут как дубль для -3 если не сработало)
+    (
+        re.compile(
+            r"\bkotlin\s+(android|приложен|разработ)|"
+            r"\bobjective[\s-]?c\b|"
+            r"flutter\s+нативн|jetpack\s+compose|swiftui",
+            re.IGNORECASE,
+        ),
+        "native mobile",
+    ),
+    # Embedded и IoT
+    (
+        re.compile(
+            r"\barduino\b|\besp32\b|\besp8266\b|raspberry\s+pi\s+прошивк|"
+            r"микроконтроллер|stm32|\baltium\s+designer|"
+            r"\bazбук\w+\s+(морзе|кода)|связь\s+азбукой",
+            re.IGNORECASE,
+        ),
+        "embedded/IoT",
+    ),
+    # ML с обучением моделей (не использование API)
+    (
+        re.compile(
+            r"обучен\w+\s+(кастомн|собственн|своей)\s+модел|"
+            r"train\w+\s+(custom|own)\s+model|"
+            r"\bfine[\s-]?tun\w+\s+(c\s+нул|with\s+own\s+data)|"
+            r"датасет\s+(на\s+|для\s+)?(\d+\s+тысяч|сбор)|"
+            r"\btraining\s+pipeline|trained\s+from\s+scratch",
+            re.IGNORECASE,
+        ),
+        "ML обучение кастомных моделей",
+    ),
+    # 3D/WebGL/Three.js глубокого уровня
+    (
+        re.compile(
+            r"three\.?js\s+(сложн|шейдер|глубок|professional)|"
+            r"\bwebgl\s+(шейдер|глубок|сложн)|"
+            r"3d[\s-]?визуализ\w+\s+(глубок|сложн|интерактивн)|"
+            r"\bblender\s+(моделир|анимац)",
+            re.IGNORECASE,
+        ),
+        "3D/WebGL глубокого уровня",
+    ),
+    # Геймдев — уже частично есть в hard reject, дублирующая страховка
+    (
+        re.compile(
+            r"\bunity[\s-]?(разработ|игр|приложен)|\bunreal\s+engine|"
+            r"\bgodot\s+(разработ|игр)|игров\w+\s+движок",
+            re.IGNORECASE,
+        ),
+        "геймдев",
+    ),
+    # Криптотрейдинг боты для бирж
+    (
+        re.compile(
+            r"торгов\w+\s+бот\w+\s+(для|на)\s+(бирж|binance|bybit|kucoin|okx)|"
+            r"крипто[\s-]?(трейд|арбитраж)\s+бот|"
+            r"\barbitrage\s+bot|hft\s+бот",
+            re.IGNORECASE,
+        ),
+        "криптотрейдинг боты",
+    ),
+    # Перенос/миграция серверов как основная задача
+    (
+        re.compile(
+            r"перенос\s+сервер\w*\s+(как\s+основ|основная|задача)|"
+            r"миграц\w+\s+(сервер|сайт)\s+(как\s+основ|основная)|"
+            r"\bперевезти\s+(сайт|сервер|проект)\s+(с\s+|на\s+)\w+\s+на\s+\w+",
+            re.IGNORECASE,
+        ),
+        "миграция серверов как основная задача",
+    ),
+    # SMTP / спам-защита / прогрев IP — как основная задача
+    (
+        re.compile(
+            r"настройк\w+\s+smtp\s+(как\s+основ|основная|разверн)|"
+            r"прогрев\s+ip|warmup\s+ip|защит\w+\s+от\s+спам[\s\S]{0,30}?как\s+основн",
+            re.IGNORECASE,
+        ),
+        "SMTP/spam-protection как основное",
+    ),
+)
+
+
+def detect_profile_mismatch(title: str, description: str) -> tuple[int, str]:
+    """v4 Идея 35: задача относится к смежным/не-fullstack направлениям.
+
+    -3 если есть совпадение. Применяется только когда задача — основной фокус.
+    Не штрафовать когда упомянуто как побочный компонент (VPS-деплой в нашем стеке — нормально).
+    """
+    text = f"{title}\n{description}"
+    for regex, name in PROFILE_MISMATCH_PATTERNS:
+        m = regex.search(text)
+        if m:
+            return -3, f"профиль-mismatch ({name}): '{m.group(0).strip()[:60]}'"
+    return 0, ""
+
+
+# === v4 Идея 36: копирование продукта по референсу ===
+
+COPY_REFERENCE_FLAGS = (
+    r"\bкопи\w+\b\s+(сайт|приложен|калькулятор|конструктор|сервис)",
+    r"сделать\s+(как|по\s+образц|такое\s+же)\s+(сайт|приложен|сервис)",
+    r"по\s+образц\w+\s+(этого|вот\s+этого)\s+сайт",
+    r"\bклон\b\s+(сайт|приложен)|clone\s+of",
+    r"повторить\s+(функционал|сайт|сервис)\s+(как|по)",
+)
+_COPY_REFERENCE_RE = re.compile("|".join(COPY_REFERENCE_FLAGS), re.IGNORECASE)
+
+# Маркеры "вдохновлено" — НЕ копия, не штрафовать
+INSPIRATION_FLAGS = (
+    r"по\s+референс|вдохновл\w+\s+(дизайн|пример)|"
+    r"в\s+стиле\s+\w+|похож\w+\s+(на\s+|стиль)",
+)
+_INSPIRATION_RE = re.compile("|".join(INSPIRATION_FLAGS), re.IGNORECASE)
+
+
+def detect_copy_by_reference(
+    title: str, description: str, budget_limit: int
+) -> tuple[int, str]:
+    """v4 Идея 36: копирование по референсу с низким бюджетом.
+
+    -2 если есть прямая ссылка + слово "копия/как образец" + budget < 100k.
+    Не штрафовать если "по референсу/вдохновлено" вместо "копия".
+    """
+    text = f"{title}\n{description}"
+    if _INSPIRATION_RE.search(text):
+        # "Вдохновлено" — это нормально, не штрафуем
+        return 0, ""
+    match = _COPY_REFERENCE_RE.search(text)
+    if not match:
+        return 0, ""
+    # есть ли URL?
+    has_url = bool(re.search(r"https?://", text))
+    if not has_url:
+        return 0, ""
+    if budget_limit and budget_limit >= 100_000:
+        return 0, ""
+    return -2, f"копирование по референсу при бюджете <100к: '{match.group(0)}'"
+
+
+# === v4 Идея 37: MAX мессенджер как платформа (бонус +1) ===
+
+MAX_MESSENGER_FLAGS = (
+    r"\bMAX\b\s+(мессенджер|бот|клиент|чат|messenger|приложен|api|sdk)",
+    r"мессенджер\s+max\b",
+    r"бот\s+(в|для|на)\s+MAX\b",
+    r"max\.ru/[\w/:%-]+",
+    r"\bMasterBot\b",
+    r"\bpython[\s-]?max[\s-]?bot\b|max[\s-]?bot[\s-]?api",
+    r"max[\s-]?bot[\s-]?api[\s-]?client",
+    r"mini\s+apps?\s+(в|для)\s+max",
+    r"\bdev\.max\.ru\b",
+)
+_MAX_MESSENGER_RE = re.compile("|".join(MAX_MESSENGER_FLAGS), re.IGNORECASE)
+
+
+def detect_max_messenger(title: str, description: str) -> tuple[int, str]:
+    """v4 Идея 37: MAX как платформа для бота — малоконкурентная ниша, +1."""
+    text = f"{title}\n{description}"
+    if _MAX_MESSENGER_RE.search(text):
+        return 1, "MAX мессенджер — малоконкурентная ниша: +1"
+    return 0, ""
+
+
+# === v4 Идея 33: pirate-агрегаторы Telegram-каналов ===
+
+PIRATE_AGGREGATOR_MARKERS = (
+    # 1. Копирование/пересылка с подменой/рерайт + Telegram
+    (
+        re.compile(
+            r"(копирован\w+|пересылк\w+\s+с\s+подмен|рерайт\s+чужих\s+пост|перепост\s+без\s+атрибуц)"
+            r"[\s\S]{0,80}?(telegram|телеграм)|"
+            r"(telegram|телеграм)[\s\S]{0,80}?(копирован\w+|подмен\w+\s+авторств|рерайт)",
+            re.IGNORECASE,
+        ),
+        "копирование/рерайт + Telegram",
+    ),
+    # 2. Несколько целевых каналов + независимые источники = сетка
+    (
+        re.compile(
+            r"(несколько|сетк\w+|пул)\s+(целев\w*|свои\w*)\s+канал[\s\S]{0,120}?"
+            r"(независим\w*|разн\w*|чужих)\s+источник",
+            re.IGNORECASE,
+        ),
+        "сетка каналов + независимые источники",
+    ),
+    # 3. Скачивание фото и текста + постинг вместо forward — обход атрибуции
+    (
+        re.compile(
+            r"(скачиван|загруз)\w+\s+(фото|изображен|текст\w*)[\s\S]{0,80}?"
+            r"(постинг|публикац|в\s+канал)\s+(а|без)\s+(forward|форвард)|"
+            r"(репост|перепост)\s+без\s+(автор|источник|атрибуц)",
+            re.IGNORECASE,
+        ),
+        "постинг без forward (обход атрибуции)",
+    ),
+    # 4. Глобальные бан-листы пользователей
+    (
+        re.compile(
+            r"глобальн\w+\s+бан[\s-]?лист\w*|общ\w+\s+бан[\s-]?лист\w+\s+(пользоват|каналов)",
+            re.IGNORECASE,
+        ),
+        "глобальный бан-лист",
+    ),
+    # 5. Django/FastAPI admin + деплой — профессиональная инфраструктура для масштаба
+    (
+        re.compile(
+            r"(django|fastapi)[\s-]?admin[\s\S]{0,80}?(деплой|production|прод|vps|сервер)|"
+            r"админк\w+\s+(на\s+)?(django|fastapi)[\s\S]{0,80}?(деплой|production|vps)",
+            re.IGNORECASE,
+        ),
+        "профессиональная админка для масштаба",
+    ),
+)
+
+
+def detect_pirate_aggregator(title: str, description: str) -> tuple[int, str]:
+    """v4 Идея 33: pirate-агрегатор Telegram-каналов.
+
+    Не hard reject (user обсуждение 11 мая — снизить уровень моральных reject'ов).
+    При 3+ из 5 маркеров — штраф -3.
+    """
+    text = f"{title}\n{description}"
+    matched = [name for regex, name in PIRATE_AGGREGATOR_MARKERS if regex.search(text)]
+    if len(matched) >= 3:
+        return -3, f"pirate-агрегатор Telegram ({len(matched)} маркеров: {', '.join(matched[:3])})"
+    return 0, ""
 
 
 # === v4 hot-fix: "инверсия автора" — заказчик пишет от лица исполнителя ===
@@ -2043,6 +2412,18 @@ async def score_project(
 
     is_ai = _has_ai_priority(title, description)
 
+    # v4 Идея 32: расширенный hard reject парсинга коммерческих источников
+    cp2 = detect_commercial_parsing_v2(title, description)
+    if cp2:
+        logger.info("CommercialParsingV2HardReject [%s]: %s", title[:60], cp2)
+        return {
+            "score": 0, "is_ai": is_ai, "reason": cp2,
+            "hard_reject": True, "scope_unclear": False, "no_code_required": None,
+            "site_category": "not_site",
+            "hire_rate_penalty": False, "hired_percent": hired_percent,
+            "breakdown": {},
+        }
+
     # v4 hot-fix: инверсия автора (описание написано от лица исполнителя)
     inverted = detect_inverted_author(title, description)
     if inverted:
@@ -2397,6 +2778,52 @@ async def score_project(
             logger.info(
                 "AIEngineering [%s]: %d→%d — %s",
                 title[:60], old_score, score, ai_note,
+            )
+
+        # === v4 Идея 33: pirate-агрегаторы Telegram ===
+        pirate_mod, pirate_reason = detect_pirate_aggregator(title, description)
+        if pirate_mod:
+            old_score = score
+            score = max(0, score + pirate_mod)
+            reason = f"{reason}; {pirate_reason}" if reason else pirate_reason
+            logger.info(
+                "PirateAggregator [%s]: %d→%d — %s",
+                title[:60], old_score, score, pirate_reason,
+            )
+
+        # === v4 Идея 35: несоответствие профиля fullstack ===
+        prof_mod, prof_reason = detect_profile_mismatch(title, description)
+        if prof_mod:
+            old_score = score
+            score = max(0, score + prof_mod)
+            reason = f"{reason}; {prof_reason}" if reason else prof_reason
+            logger.info(
+                "ProfileMismatch [%s]: %d→%d — %s",
+                title[:60], old_score, score, prof_reason,
+            )
+
+        # === v4 Идея 36: копирование по референсу ===
+        copy_mod, copy_reason = detect_copy_by_reference(
+            title, description, budget_limit_eff,
+        )
+        if copy_mod:
+            old_score = score
+            score = max(0, score + copy_mod)
+            reason = f"{reason}; {copy_reason}" if reason else copy_reason
+            logger.info(
+                "CopyByReference [%s]: %d→%d — %s",
+                title[:60], old_score, score, copy_reason,
+            )
+
+        # === v4 Идея 37: MAX мессенджер +1 ===
+        max_mod, max_reason = detect_max_messenger(title, description)
+        if max_mod:
+            old_score = score
+            score = min(10, score + max_mod)
+            reason = f"{reason}; {max_reason}" if reason else max_reason
+            logger.info(
+                "MaxMessenger [%s]: %d→%d — %s",
+                title[:60], old_score, score, max_reason,
             )
 
         # === v3: усиления штрафов ===
