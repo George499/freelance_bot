@@ -563,6 +563,16 @@ HARD_REJECT_KEYWORDS = (
     r"\bumi[\s.-]?cms\b",
     r"\binstantcms\b|инстант[\s-]?cms",
     r"\bhostcms\b",
+    # v4 волна 1.5 / Идея 30: остальные CMS из полного списка user'а
+    r"\badobe\s+muse\b|\bадоб\s+мьюз",
+    r"\btextolite\b|\bтекстолайт",
+    r"\bucoz\b|\bюкоз\w*",
+    r"\bmegagroup\b|\bмегагрупп\w*",
+    r"\bunisite\b|\bюнисайт\w*",
+    r"\bzend\b\s+(framework|php)?",
+    # Senler — основная работа (не интеграция через API)
+    r"\bsenler\b\s+(как\s+основ|основная|настрой|разработ)",
+    r"автоворонк\w+\s+(на\s+|в\s+)?senler",
     r"\blaravel\b", r"\bsymfony\b", r"\byii[\s-]?2?\b", r"\bcodeigniter\b",
     # v4 2.7: PHP жёстко — любое явное упоминание PHP как стека
     r"\bна\s+(чистом\s+|чисто\s+)?php\b",
@@ -588,6 +598,36 @@ HARD_REJECT_KEYWORDS = (
     r"\bunity\b\s+разработ", r"\bunreal\b\s+engine",
 )
 _HARD_REJECT_RE = re.compile("|".join(HARD_REJECT_KEYWORDS), re.IGNORECASE)
+
+
+# v4 волна 1.5 / Регрессия 1: маркеры "работы РЯДОМ с CMS"
+# (бэкенд на нашем стеке, который интегрируется с чужим сайтом через API).
+# Если совпало одновременно с CMS-маркером — пропускаем hard reject и даём в скоринг.
+INTEGRATION_STACK_FLAGS = (
+    r"\b(api|апи)\s+на\s+(nest|next|python|fastapi|node|go\b)",
+    r"бот\s+(на\s+)?(python|aiogram|nest|node)",
+    r"\b(next\.?js|nest\.?js|nodejs)\s+(приложен|сайт|сервис|бэкенд|api)",
+    r"\bвебхук\w*|\bwebhook",
+    r"интеграц\w+\s+(через|с|по)\s+(api|rest|graphql|webhook|вебхук)",
+    r"бэкенд\s+(на\s+)?(nest|next|fastapi|python|node)",
+    r"микросервис\s+(на\s+)?(node|python|nest)",
+    r"телеграм[\s-]?бот\s+(для|которы|на)",
+    r"telegram[\s-]?бот\s+(для|которы|на)",  # русское описание с английским словом
+    r"\btelegram[\s-]?bot\s+(for|which|to)",  # на английском
+    r"интегриру\w+\s+(с|через)\s+(rest|api|вебхук|webhook)",
+    r"через\s+(rest|api|graphql|webhook)\s+(api|интерфейс|интеграц)?",
+    r"\brest\s+api\b",
+    r"бот\s+(который|для)\s+(работает|интегриру|подключа)",
+)
+_INTEGRATION_STACK_RE = re.compile("|".join(INTEGRATION_STACK_FLAGS), re.IGNORECASE)
+
+
+def is_integration_with_external_cms(title: str, description: str) -> bool:
+    """v4 рег.1: задача — наш стек НАД чужой CMS через API/webhook?
+
+    Если ДА — CMS-маркер не приводит к hard reject, задача идёт в скоринг.
+    """
+    return bool(_INTEGRATION_STACK_RE.search(f"{title}\n{description}"))
 
 
 # === Детекторы ===
@@ -932,6 +972,76 @@ def detect_budget_scope_mismatch(
         return -2, reason
 
     return 0, ""
+
+
+# === v4 Идея 31: AI-инженерия vs AI-маркетинг ===
+
+# Маркеры AI-инженерии (наш профиль) — бонус +1
+AI_ENGINEERING_MARKERS = (
+    r"function\s+calling|tool[\s-]?use|tool\s+orchestrator",
+    r"\brag\b|retrieval[\s-]?augmented|векторн\w+\s+(бд|база|сторадж|store)",
+    r"\bembeddings?\b|эмбеддинг",
+    r"\bchromadb\b|\bpinecone\b|\bqdrant\b|\bweaviate\b|\bchroma\b",
+    r"system\s+prompt|систем\w+\s+промпт",
+    r"\bclaude\s+api|\bopenai\s+api|\banthropic\s+api|yandex[\s-]?gpt|gigachat",
+    r"\bwhisper\b|\btts\b|elevenlabs|yandex\s+speechkit",
+    r"\blangchain\b|\blanggraph\b|llama[\s-]?index",
+    r"мульти[\s-]?агент\w+\s+(систем|архитект)",
+    r"чат[\s-]?(помощник|ассистент)\s+над\s+(данными|excel|crm|таблиц)",
+    r"ассистент\s+над\s+документ\w+\s+через\s+rag",
+    r"\bmcp\b\s+(сервер|server|integration)",
+)
+_AI_ENG_RE = re.compile("|".join(AI_ENGINEERING_MARKERS), re.IGNORECASE)
+
+# СТРОГИЕ маркеры AI-маркетинга — 1 достаточно для hard reject
+AI_MARKETING_STRONG_MARKERS = (
+    r"ии[\s-]?агент\w*\s+(по\s+привлечен|для\s+(холодн|лидоген|outreach))",
+    r"\bии[\s-]?агент\w*\s+(для\s+товарн|для\s+ниш|для\s+селлер)",
+    r"research[\s-]?агент\w+\s+(для|по)\s+(ниш|товар|перепродаж)",
+    r"\bai\b\s+для\s+селлер\w+\s+маркетплейс",
+    r"сетк\w+\s+(агентов|ии[\s-]?ботов)|ии[\s-]?агентств",
+    r"выявлени\w+\s+центров\s+принятия\s+решен",
+    r"холодн\w+\s+outreach",
+)
+_AI_MKT_STRONG_RE = re.compile("|".join(AI_MARKETING_STRONG_MARKERS), re.IGNORECASE)
+
+# СЛАБЫЕ маркеры — 1 = штраф -3, 2+ = hard reject
+AI_MARKETING_WEAK_MARKERS = (
+    r"автогенерац\w+\s+пост|автоматическ\w+\s+пост\w+\s+в\s+(телеграм|тг|vk|дзен)",
+    r"автоматическ\w+\s+написани\w+\s+стат\w+",
+    r"плотност\w+\s+словоформ|количеств\w+\s+ключей",
+    r"seo[\s-]?копирайт|seo[\s-]?текст",
+    r"продающ\w+\s+(ии|ai|нейросет)",
+    r"удержани\w+\s+диалог\w+\s+автомат",
+    r"автозаполнен\w+\s+карточек\s+товар\w+\s+через\s+(ai|ии)",
+    r"товарн\w+\s+связк|торгов\w+\s+ниш\s+(для|маркетплейс)",
+)
+_AI_MKT_WEAK_RE = re.compile("|".join(AI_MARKETING_WEAK_MARKERS), re.IGNORECASE)
+
+
+def classify_ai_task(title: str, description: str) -> tuple[str, list[str]]:
+    """v4 Идея 31: классификация AI-задачи.
+
+    Returns: (category, marker_examples)
+        AI_MARKETING_HARD  — 1+ строгий маркетинговый ИЛИ 2+ слабых — hard reject
+        AI_MARKETING_SOFT  — 1 слабый маркетинговый маркер — штраф -3
+        AI_ENGINEERING     — 1+ инженерных и 0 маркетинговых — бонус +1
+        AI_AMBIGUOUS       — иначе
+    """
+    text = f"{title}\n{description}"
+    eng_matches = {m.group(0).lower() for m in _AI_ENG_RE.finditer(text)}
+    strong = {m.group(0).lower() for m in _AI_MKT_STRONG_RE.finditer(text)}
+    weak = {m.group(0).lower() for m in _AI_MKT_WEAK_RE.finditer(text)}
+
+    if strong:
+        return "AI_MARKETING_HARD", list(strong)[:3]
+    if len(weak) >= 2:
+        return "AI_MARKETING_HARD", list(weak)[:3]
+    if len(weak) == 1:
+        return "AI_MARKETING_SOFT", list(weak)[:3]
+    if eng_matches:
+        return "AI_ENGINEERING", list(eng_matches)[:3]
+    return "AI_AMBIGUOUS", []
 
 
 # === v4 раздел 7: терминологическая специфичность ===
@@ -1891,6 +2001,20 @@ async def score_project(
 
     is_ai = _has_ai_priority(title, description)
 
+    # v4 Идея 31: AI-маркетинг с 2+ маркерами → hard reject
+    ai_class, ai_markers = classify_ai_task(title, description)
+    if ai_class == "AI_MARKETING_HARD":
+        marker_str = "; ".join(ai_markers)
+        logger.info("AIMarketingHardReject [%s]: %s", title[:60], marker_str)
+        return {
+            "score": 0, "is_ai": is_ai,
+            "reason": f"AI-маркетинг / инфобиз (2+ маркера): {marker_str}",
+            "hard_reject": True, "scope_unclear": False, "no_code_required": None,
+            "site_category": "not_site",
+            "hire_rate_penalty": False, "hired_percent": hired_percent,
+            "breakdown": {},
+        }
+
     # P1.2: универсальный hard-reject (инфобиз / AI-агентство) — даже для AI-заказов
     always_hr = detect_always_hard_reject(title, description)
     if always_hr:
@@ -1942,13 +2066,21 @@ async def score_project(
             "breakdown": {},
         }
 
-    if not is_ai:
-        hr = _hard_reject_reason(title, description)
-        if hr:
+    # v4 волна 1.5 рег.1: hard reject для CMS/PHP-стеков ВСЕГДА (снято AI-исключение).
+    # Escape — если в описании явные маркеры работы РЯДОМ с CMS (наш стек через API).
+    hr = _hard_reject_reason(title, description)
+    if hr:
+        if is_integration_with_external_cms(title, description):
+            logger.info(
+                "CMS-stack mention with integration context [%s]: '%s' — пропускаем в скоринг",
+                title[:60], hr,
+            )
+        else:
             logger.info("HardReject [%s]: %s", title[:60], hr)
             return {
-                "score": 0, "is_ai": False, "reason": f"hard reject: '{hr}'",
-                "hard_reject": True, "scope_unclear": False, "no_code_required": None, "site_category": "not_site",
+                "score": 0, "is_ai": is_ai, "reason": f"hard reject: '{hr}'",
+                "hard_reject": True, "scope_unclear": False, "no_code_required": None,
+                "site_category": "not_site",
                 "breakdown": {},
             }
 
@@ -2121,18 +2253,10 @@ async def score_project(
 
         scope_unclear = bool(scope_flags) or bool(open_flags) or bool(tech_flags)
 
-        # Штраф за низкий процент найма
+        # v4 волна 1.5 рег.2: старый штраф -1 за hire_rate<30% удалён —
+        # сигнал теперь учитывается через compute_competition_modifier
+        # (комбинация с медальками покупателя).
         hire_rate_penalty = False
-        if hired_percent is not None and hired_percent < 30:
-            old_score = score
-            score = max(0, score - 1)
-            hire_rate_penalty = True
-            penalty_note = f"штраф -1: hire_rate {hired_percent}%"
-            reason = f"{reason}; {penalty_note}" if reason else penalty_note
-            logger.info(
-                "HireRatePenalty [%s]: %d→%d (hire_rate=%d%%)",
-                title[:60], old_score, score, hired_percent,
-            )
 
         # Штраф за несоответствие бюджета и скоупа
         bsm_penalty, bsm_reason = detect_budget_scope_mismatch(title, description, budget_limit_eff)
@@ -2198,6 +2322,27 @@ async def score_project(
             logger.info(
                 "Terminology [%s]: %d→%d — %s",
                 title[:60], old_score, score, term_reason,
+            )
+
+        # === v4 Идея 31: AI-инженерия / AI-маркетинг soft-модификатор ===
+        # AI_MARKETING_HARD уже отбит как hard reject выше.
+        if ai_class == "AI_MARKETING_SOFT":
+            old_score = score
+            score = max(0, score - 3)
+            ai_note = f"AI-маркетинг (1 маркер: {ai_markers[0]}): -3"
+            reason = f"{reason}; {ai_note}" if reason else ai_note
+            logger.info(
+                "AIMarketingSoft [%s]: %d→%d — %s",
+                title[:60], old_score, score, ai_note,
+            )
+        elif ai_class == "AI_ENGINEERING":
+            old_score = score
+            score = min(10, score + 1)
+            ai_note = f"AI-инженерия ({ai_markers[0]}): +1"
+            reason = f"{reason}; {ai_note}" if reason else ai_note
+            logger.info(
+                "AIEngineering [%s]: %d→%d — %s",
+                title[:60], old_score, score, ai_note,
             )
 
         # === v3: усиления штрафов ===

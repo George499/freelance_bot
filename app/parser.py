@@ -20,7 +20,12 @@ from app.kwork_filter import (
     score_project,
     should_respond,
 )
-from app.quota import get_days_until_refill, get_quota
+from app.quota import (
+    can_send_borderline,
+    get_days_until_refill,
+    get_quota,
+    increment_borderline,
+)
 from kwork import Kwork
 
 logger = logging.getLogger(__name__)
@@ -496,6 +501,17 @@ async def get_kwork_projects(bot: Bot, config: Settings):
                 offers_count, score_result["score"],
             )
 
+        # v4 волна 1.5 рег.3: дневной лимит пограничных уведомлений.
+        # Применяется ТОЛЬКО когда respond=False (рекомендации к отклику — без лимита).
+        if not respond and not can_send_borderline():
+            stats["borderline_sent"] += 1  # учётно
+            logger.info(
+                "BorderlineDailyLimit [%s]: лимит пограничных исчерпан — тишина",
+                title[:60],
+            )
+            await asyncio.sleep(random.choice([1, 2, 3]))
+            continue
+
         text = _format_kwork_message(
             title=title,
             desc=desc,
@@ -531,6 +547,8 @@ async def get_kwork_projects(bot: Bot, config: Settings):
                 text="Открыть на Kwork", url=kw_project_url, data=btn_data
             )
             stats["borderline_sent"] += 1
+            # v4 волна 1.5 рег.3: инкремент дневного счётчика borderline.
+            increment_borderline()
 
         await bot.send_message(
             chat_id=config.tg_group,

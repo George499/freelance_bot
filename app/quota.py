@@ -29,6 +29,7 @@ def _default_state() -> dict:
     return {
         "responses_used": 0,
         "responses_used_today": 0,
+        "borderline_sent_today": 0,
         "next_refill_date": next_refill.isoformat(),
         "last_reset_date": today.isoformat(),
     }
@@ -91,7 +92,11 @@ def get_quota() -> dict:
     # Ежедневный сброс
     if state.get("last_reset_date") != today_str:
         state["responses_used_today"] = 0
+        state["borderline_sent_today"] = 0
         state["last_reset_date"] = today_str
+        changed = True
+    elif "borderline_sent_today" not in state:
+        state["borderline_sent_today"] = 0
         changed = True
 
     # Сброс квоты при наступлении даты пополнения
@@ -127,6 +132,26 @@ def increment_response() -> dict:
 def reset_today() -> dict:
     state = get_quota()
     state["responses_used_today"] = 0
+    state["borderline_sent_today"] = 0
+    save_quota(state)
+    return state
+
+
+# v4 волна 1.5 рег.3: дневной лимит пограничных уведомлений.
+BORDERLINE_DAILY_LIMIT = 2
+
+
+def borderline_sent_today() -> int:
+    return int(get_quota().get("borderline_sent_today", 0))
+
+
+def can_send_borderline() -> bool:
+    return borderline_sent_today() < BORDERLINE_DAILY_LIMIT
+
+
+def increment_borderline() -> dict:
+    state = get_quota()
+    state["borderline_sent_today"] = int(state.get("borderline_sent_today", 0)) + 1
     save_quota(state)
     return state
 
