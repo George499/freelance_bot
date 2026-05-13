@@ -600,6 +600,48 @@ HARD_REJECT_KEYWORDS = (
 _HARD_REJECT_RE = re.compile("|".join(HARD_REJECT_KEYWORDS), re.IGNORECASE)
 
 
+# === v4 hot-fix: "инверсия автора" — заказчик пишет от лица исполнителя ===
+# Наблюдённые кейсы: "Разработаю Телеграм БОТ на Python любой сложности,
+# для любых целей + поддержка. Сделаю быстро, качественно и не дорого!"
+# На Kwork заказчики НЕ пишут "разработаю/сделаю". Если так — это либо
+# спам-исполнитель в форме заказа (нарушение ToS), либо мусор.
+
+INVERTED_AUTHOR_FLAGS = (
+    r"\bразработ(аю|аем|ает)\b",
+    r"\bсделаю\b|\bсделаем\s+(быстро|качественн|за\s+\d)",
+    r"\bнапишу\b|\bнапишем\s+(быстро|качественн)",
+    r"\bпредлагаю\s+(услуги|разработ|свои)",
+    r"любой\s+сложност",
+    r"быстро,?\s+качественн\w+",
+    r"\+\s*поддержка\b",
+    r"для\s+любых\s+целей",
+    r"\bобращайтесь\b",
+    r"стоимость\s+зависит\s+от",
+    r"под\s+ключ\s+за\s+\d+\s*(день|дня|дней|сутки)",
+    r"\bвыполню\b|\bвыполним\s+(быстро|качественн|в\s+срок)",
+    r"опыт\s+работы\s+\d+\s*(лет|год)",
+    r"\bпортфолио\b\s+(есть|готов|могу)",
+    r"\bцен[аы]?\s+(договорн|демократичн|приятн|низк)",
+)
+_INVERTED_AUTHOR_RE = re.compile("|".join(INVERTED_AUTHOR_FLAGS), re.IGNORECASE)
+
+
+def detect_inverted_author(title: str, description: str) -> Optional[str]:
+    """Hard reject: описание написано от лица исполнителя ('разработаю',
+    'сделаю', 'любой сложности', 'быстро качественно'), а не заказчика.
+
+    Триггер: 2+ уникальных маркера.
+    """
+    text = f"{title}\n{description}"
+    matches = {m.group(0).lower() for m in _INVERTED_AUTHOR_RE.finditer(text)}
+    if len(matches) >= 2:
+        sample = ", ".join(sorted(matches)[:3])
+        return (
+            f"инверсия автора (описание от исполнителя, не заказчика): {sample}"
+        )
+    return None
+
+
 # v4 волна 1.5 / Регрессия 1: маркеры "работы РЯДОМ с CMS"
 # (бэкенд на нашем стеке, который интегрируется с чужим сайтом через API).
 # Если совпало одновременно с CMS-маркером — пропускаем hard reject и даём в скоринг.
@@ -2000,6 +2042,18 @@ async def score_project(
         return default_result
 
     is_ai = _has_ai_priority(title, description)
+
+    # v4 hot-fix: инверсия автора (описание написано от лица исполнителя)
+    inverted = detect_inverted_author(title, description)
+    if inverted:
+        logger.info("InvertedAuthorHardReject [%s]: %s", title[:60], inverted)
+        return {
+            "score": 0, "is_ai": is_ai, "reason": inverted,
+            "hard_reject": True, "scope_unclear": False, "no_code_required": None,
+            "site_category": "not_site",
+            "hire_rate_penalty": False, "hired_percent": hired_percent,
+            "breakdown": {},
+        }
 
     # v4 Идея 31: AI-маркетинг с 2+ маркерами → hard reject
     ai_class, ai_markers = classify_ai_task(title, description)
