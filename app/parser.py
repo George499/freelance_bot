@@ -186,7 +186,8 @@ def _format_kwork_message(
         badges.append("⚡ Быстрые деньги")
 
     badges_line = " ".join(badges)
-    preview = html.quote(desc[:800]) + ("..." if len(desc) > 800 else "")
+    # Telegram message limit 4096; оставляем запас под header/badges/решение/квота/ссылку.
+    preview = html.quote(desc[:2500]) + ("..." if len(desc) > 2500 else "")
 
     unknowns_block = ""
     if unknowns:
