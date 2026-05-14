@@ -568,25 +568,27 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             reply_markup=keyboard,
         )
 
-        if respond and config.anthropic_api_key:
-            offer = await generate_offer_claude(
-                title=title,
-                description=desc,
-                budget=budget_str,
-                anthropic_api_key=config.anthropic_api_key,
-                is_ai=score_result["is_ai"],
-                scope_unclear=score_result.get("scope_unclear", False),
-                site_category=score_result.get("site_category", "not_site"),
-            )
-            if offer:
-                await bot.send_message(
-                    chat_id=config.tg_group,
-                    text=(
-                        f"📝 <b>Черновик отклика</b> (проверь и поправь перед "
-                        f"отправкой):\n\n{html.quote(offer)}"
-                    ),
-                    message_thread_id=config.tg_topic_id,
-                )
+        # Генерация черновика отклика временно отключена — user разбирает
+        # вручную в Claude-чате. Раскомментировать когда промпт доведём.
+        # if respond and config.anthropic_api_key:
+        #     offer = await generate_offer_claude(
+        #         title=title,
+        #         description=desc,
+        #         budget=budget_str,
+        #         anthropic_api_key=config.anthropic_api_key,
+        #         is_ai=score_result["is_ai"],
+        #         scope_unclear=score_result.get("scope_unclear", False),
+        #         site_category=score_result.get("site_category", "not_site"),
+        #     )
+        #     if offer:
+        #         await bot.send_message(
+        #             chat_id=config.tg_group,
+        #             text=(
+        #                 f"📝 <b>Черновик отклика</b> (проверь и поправь перед "
+        #                 f"отправкой):\n\n{html.quote(offer)}"
+        #             ),
+        #             message_thread_id=config.tg_topic_id,
+        #         )
 
         await asyncio.sleep(random.choice([1, 2, 3]))
 
