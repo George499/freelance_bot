@@ -448,6 +448,16 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             await asyncio.sleep(random.choice([1, 2, 3]))
             continue
 
+        # Anthropic упал / другая ошибка скоринга — молчим, не шумим в группу.
+        if score_result.get("scoring_error"):
+            stats["low_score_silenced"] += 1
+            logger.warning(
+                "ScoringErrorSilenced [%s]: %s",
+                title[:60], score_result.get("reason", ""),
+            )
+            await asyncio.sleep(random.choice([1, 2, 3]))
+            continue
+
         # Низкий скор (≤4) — тоже молчим
         if score_result["score"] < TELEGRAM_SCORE_THRESHOLD:
             stats["low_score_silenced"] += 1

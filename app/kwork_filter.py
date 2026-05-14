@@ -551,6 +551,12 @@ HARD_REJECT_KEYWORDS = (
     # Русские склонения через \w* (исправление: \bбитрикс\b не ловил 'битриксе/битрикса')
     r"\b1c[\s-]*битрикс\w*", r"\bбитрикс\w*", r"\bbitrix\b",
     r"\bwordpress\b", r"\bвордпресс\w*", r"\bна\s+wp\b",
+    # русское сокращение WP + типичные плагины
+    r"\bна\s+(сайт\w*\s+)?вп\b", r"\bвп[\s-]?сайт", r"\bсайт\s+на\s+вп\b",
+    r"\ball[\s-]?import\b",  # WP-плагин массового импорта
+    r"\bwoocommerce\b|\bвуком(мерс|ерс)\w*|\bвокоммерс\w*",
+    r"\bwp[\s-]?(импорт|товар|плагин|сайт)",
+    r"импорт\s+\d+\s*(к|тыс|т)\s+товар\w+\s+(на|в)\s+(вп|wp|wordpress|вордпрес)",
     r"\bтильд\w+", r"\btilda\b",
     r"\bjoomla\b", r"\bopencart\b", r"\bshopify\b", r"\bwix\b",
     r"\bdrupal\b", r"\bдрупал\w*",
@@ -2876,6 +2882,7 @@ async def score_project(
             "hire_rate_penalty": False, "hired_percent": hired_percent,
             "breakdown": {},
             "category": category, "score_big": None, "score_fast": None,
+            "scoring_error": True,
         }
 
 
