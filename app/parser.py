@@ -367,9 +367,12 @@ async def get_kwork_projects(bot: Bot, config: Settings):
 
     projects = get_project_data(raw_projects["response"])
     paging = raw_projects["paging"]
-    pages = int((paging["pages"] + 1) / 2)
+    # Kwork сортирует страницы не строго по дате — свежие заказы могут быть
+    # на любой странице (на page 1 есть и 5-часовые, и 280-дневные). Поэтому
+    # обходим ВСЕ страницы, иначе пропускаем свежие на page 6+.
+    total_pages = int(paging.get("pages", 1))
 
-    for page in range(2, pages):
+    for page in range(2, total_pages + 1):
         other_projects = await kwork.api_request(
             method="post",
             api_method="projects",
