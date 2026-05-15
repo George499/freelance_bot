@@ -830,16 +830,17 @@ PROFILE_MISMATCH_PATTERNS = (
 
 
 def detect_profile_mismatch(title: str, description: str) -> tuple[int, str]:
-    """v4 Идея 35: задача относится к смежным/не-fullstack направлениям.
+    """v5 Идея 35 (мягкая): -2 при совпадении.
 
-    -3 если есть совпадение. Применяется только когда задача — основной фокус.
-    Не штрафовать когда упомянуто как побочный компонент (VPS-деплой в нашем стеке — нормально).
+    С учётом Claude Code многие смежные направления реально решаются —
+    штраф мягкий, не reject. Применяется только когда задача — основной
+    фокус, не побочный компонент.
     """
     text = f"{title}\n{description}"
     for regex, name in PROFILE_MISMATCH_PATTERNS:
         m = regex.search(text)
         if m:
-            return -3, f"профиль-mismatch ({name}): '{m.group(0).strip()[:60]}'"
+            return -2, f"профиль-mismatch ({name}): '{m.group(0).strip()[:60]}'"
     return 0, ""
 
 
@@ -884,6 +885,136 @@ def detect_copy_by_reference(
     if budget_limit and budget_limit >= 100_000:
         return 0, ""
     return -2, f"копирование по референсу при бюджете <100к: '{match.group(0)}'"
+
+
+# === v5 Идея 40: формализация криминал-категорий (hard reject) ===
+# Только реальные юридические риски (УК/КоАП РФ).
+
+CRIMINAL_CATEGORIES_FLAGS = (
+    # 1. Букмекерская тематика заблокированных в РФ
+    (
+        re.compile(
+            r"\b1[\s-]?x[\s-]?bet\b|\bmelbet\b|\bмостбет\b|\bmostbet\b|"
+            r"\bпари[\s-]?матч\b|\bparimatch\b|\b1win\b|"
+            r"букмекер\w*\s+(контор|компани)|"
+            r"беттинг\w*\s+(сайт|разработ|бот)|"
+            r"казино\s+онлайн\s+(разработ|бот|сайт)",
+            re.IGNORECASE,
+        ),
+        "букмекерство/казино заблокированные в РФ (ст. 14.1.1 КоАП, 171.2 УК)",
+    ),
+    # 2. Пробив персональных данных / слитые базы (ФЗ-152)
+    (
+        re.compile(
+            r"\bглаз\s+бога\b|\bgetcontact\b|\bgsm[\s-]?info\b|"
+            r"пробив\s+(по\s+)?(номер|телефон|имени|паспорт)|"
+            r"слит\w+\s+баз\w+\s+(данных|контакт|клиент)|"
+            r"бот\s+для\s+пробив|пробив\w+\s+бот",
+            re.IGNORECASE,
+        ),
+        "пробив ПДн из сливов (нарушение ФЗ-152)",
+    ),
+    # 3. Ворованные / общие / купленные API-ключи
+    (
+        re.compile(
+            r"общ\w+\s+(аккаунт|подписк|key|ключ)\s+(openai|claude|anthropic|midjourney|chatgpt|cursor)|"
+            r"куплен\w+\s+(аккаунт|подписк|key|ключ)\s+(openai|claude|chatgpt|cursor)|"
+            r"shared\s+(account|api[\s-]?key)|"
+            r"использу\w+\s+чуж\w+\s+(ключ|подписк|аккаунт)",
+            re.IGNORECASE,
+        ),
+        "ворованные/общие API-ключи коммерческих сервисов",
+    ),
+    # 4. Криминал с детьми, оружием, наркотиками
+    (
+        re.compile(
+            r"\bдетск\w+\s+(порно|интим)|"
+            r"\bcsam\b|\bcsem\b|"
+            r"продаж\w+\s+(оружи|нарко|психотроп|спайс)|"
+            r"\bкладмен|\bзакладк\w+\s+(бот|сайт)|"
+            r"\bдарквеб[\s-]?(маркет|шоп)|даркнет[\s-]?(маркет|шоп)",
+            re.IGNORECASE,
+        ),
+        "оружие/наркотики/CSAM",
+    ),
+)
+
+
+def detect_criminal_categories(title: str, description: str) -> Optional[str]:
+    """v5 Идея 40: hard reject реального юридического риска (УК/КоАП РФ).
+
+    Только эти категории остаются как абсолютный reject:
+    1) букмекерство/казино в РФ
+    2) пробив ПДн из сливов
+    3) ворованные/общие API-ключи
+    4) оружие/наркотики/CSAM
+
+    Госплатформы+капча (визовые/мемориалы) — уже отбиваются в
+    detect_booking_automation.
+    """
+    text = f"{title}\n{description}"
+    for regex, label in CRIMINAL_CATEGORIES_FLAGS:
+        m = regex.search(text)
+        if m:
+            return f"{label}: '{m.group(0).strip()}'"
+    return None
+
+
+# === v5 Идея 39: no-code под видом разработки ===
+# Заказчик использует инженерную терминологию + крошечный бюджет
+# = посмотрел туториал по n8n/Make, думает что blocks → product.
+
+NOCODE_UNDER_DEV_VOCAB = (
+    r"\bscaffold|\bкаркас\w*|workflow\s+chain|automation\s+chain|"
+    r"\bконтракт\w+\s+(между|задач|агент)|task\s+state|workspace\s+structure|"
+    r"мульти[\s-]?агент\w+\s+систем|multi[\s-]?agent\s+system|"
+    r"task\s+orchestrat|агент[\s-]?оркестр|"
+    r"\bautomation\s+(of|для)\s+(\d+|several|нескольк)\s+(agents|агент)"
+)
+_NOCODE_VOCAB_RE = re.compile(NOCODE_UNDER_DEV_VOCAB, re.IGNORECASE)
+
+
+def detect_nocode_under_dev(
+    title: str, description: str, budget_limit: int
+) -> tuple[int, str]:
+    """v5 Идея 39: инженерные термины + крошечный бюджет = заказчик
+    ищет no-code решение (n8n/Make.com/Zapier), не понимая разницу.
+
+    Триггер: vocab-маркер + бюджет 2000-10000 рублей. → -2 с пометкой.
+    Большие бюджеты — отдаём в обычный скоринг (заказчик действительно
+    готов платить за разработку).
+    """
+    if budget_limit and (budget_limit < 2000 or budget_limit > 10000):
+        return 0, ""
+    match = _NOCODE_VOCAB_RE.search(f"{title}\n{description}")
+    if not match:
+        return 0, ""
+    return -2, (
+        f"возможно no-code под видом разработки ('{match.group(0)}', "
+        f"бюджет {budget_limit:,} ₽) — проверь n8n/Make.com"
+    )
+
+
+# === v5 Идея 31 (мягкая): размытость задачи -1 ===
+
+VAGUE_SCOPE_FLAGS = (
+    r"обсудим\s+(подробн|реализ|детал)",
+    r"пишите\s+(ваши\s+)?предложен",
+    r"стоимост\w+\s+указан\w+\s+формально",
+    r"бюджет\s+(уточн|обсуд|приблизительн)",
+    r"\bпотом\s+обсудим",
+    r"присылайте\s+(ваши\s+)?(оценки|варианты)",
+    r"условия\s+(обсуждаем|договорные)",
+)
+_VAGUE_SCOPE_RE = re.compile("|".join(VAGUE_SCOPE_FLAGS), re.IGNORECASE)
+
+
+def detect_vague_scope(title: str, description: str) -> tuple[int, str]:
+    """v5 Идея 31: размытость ТЗ ('обсудим', 'пишите предложения')."""
+    match = _VAGUE_SCOPE_RE.search(f"{title}\n{description}")
+    if match:
+        return -1, f"размытое ТЗ ('{match.group(0)}'): -1"
+    return 0, ""
 
 
 # === v4 Идея 37: MAX мессенджер как платформа (бонус +1) ===
@@ -2057,10 +2188,23 @@ L. Калибровка budget-vs-scope на ВЕРХНИХ бюджетах (15
    - AI-интеграция с RAG: 80-150к
    - Парсер с обработкой / антибаном: 50-100к
 
-   Если expected_cost / budget_max > 1.5 → штраф -2, в reason укажи
-   "budget_scope_v2: насчитано ~Xк (компоненты A, B, C) при бюджете Yк".
+   v5 Идея 41: учитывай Claude Code speedup. Все стоимости в таблице
+   выше — для одиночной работы. Разработчик использует Claude Code
+   и закрывает задачи в 3-5 раз быстрее (SPEEDUP_FACTOR = 4).
+   Поэтому: эффективный expected_cost = expected_cost_solo / 4.
+
+   Если effective_cost / budget_max > 1.5 → штраф -2, в reason укажи
+   "budget_scope_v2 (с Claude Code): ~Xк / бюджет Yк".
    Не дублировать с штрафом python-фильтра detect_budget_scope_mismatch
    (его сигнатура другая; считай только если он не сработал).
+
+   ВАЖНО: критерий "технология не в стеке" больше НЕ блокер по умолчанию.
+   Claude Code знает большинство стеков. Скип только если технология
+   из списка где Claude Code объективно слабее:
+   - Embedded и Arduino (нужна работа с железом)
+   - Специализированный ML с обучением кастомных моделей
+   - 3D-визуализация и игровые движки глубокого уровня
+   - Криптотрейдинг боты для бирж
 
 ТИП ЗАКАЗА (для воронки short / long):
 - short: верхняя граница бюджета ≤50к, 1-2 функциональных блока,
@@ -2418,17 +2562,9 @@ async def score_project(
 
     is_ai = _has_ai_priority(title, description)
 
-    # v4 Идея 32: расширенный hard reject парсинга коммерческих источников
-    cp2 = detect_commercial_parsing_v2(title, description)
-    if cp2:
-        logger.info("CommercialParsingV2HardReject [%s]: %s", title[:60], cp2)
-        return {
-            "score": 0, "is_ai": is_ai, "reason": cp2,
-            "hard_reject": True, "scope_unclear": False, "no_code_required": None,
-            "site_category": "not_site",
-            "hire_rate_penalty": False, "hired_percent": hired_percent,
-            "breakdown": {},
-        }
+    # v5 откат идеи 32: парсинг коммерческих источников — НЕ hard reject.
+    # Оценивается по экономике (budget-scope) с учётом Claude Code speedup.
+    # detect_commercial_parsing_v2() остаётся в коде, но не вызывается.
 
     # v4 hot-fix: инверсия автора (описание написано от лица исполнителя)
     inverted = detect_inverted_author(title, description)
@@ -2442,19 +2578,10 @@ async def score_project(
             "breakdown": {},
         }
 
-    # v4 Идея 31: AI-маркетинг с 2+ маркерами → hard reject
+    # v5 смягчение идеи 31: AI-маркетинг — НЕ hard reject. Оценивается
+    # по обычным критериям (бюджет, ясность ТЗ, медальки покупателя).
+    # AI_ENGINEERING остаётся как +1 (см. ниже, после Haiku).
     ai_class, ai_markers = classify_ai_task(title, description)
-    if ai_class == "AI_MARKETING_HARD":
-        marker_str = "; ".join(ai_markers)
-        logger.info("AIMarketingHardReject [%s]: %s", title[:60], marker_str)
-        return {
-            "score": 0, "is_ai": is_ai,
-            "reason": f"AI-маркетинг / инфобиз (2+ маркера): {marker_str}",
-            "hard_reject": True, "scope_unclear": False, "no_code_required": None,
-            "site_category": "not_site",
-            "hire_rate_penalty": False, "hired_percent": hired_percent,
-            "breakdown": {},
-        }
 
     # P1.2: универсальный hard-reject (инфобиз / AI-агентство) — даже для AI-заказов
     always_hr = detect_always_hard_reject(title, description)
@@ -2463,6 +2590,18 @@ async def score_project(
         return {
             "score": 0, "is_ai": is_ai,
             "reason": f"infobiz/AI-агентство: '{always_hr}'",
+            "hard_reject": True, "scope_unclear": False, "no_code_required": None,
+            "site_category": "not_site",
+            "hire_rate_penalty": False, "hired_percent": hired_percent,
+            "breakdown": {},
+        }
+
+    # v5 Идея 40: криминал-категории (УК/КоАП РФ) — hard reject
+    criminal = detect_criminal_categories(title, description)
+    if criminal:
+        logger.info("CriminalHardReject [%s]: %s", title[:60], criminal)
+        return {
+            "score": 0, "is_ai": is_ai, "reason": criminal,
             "hard_reject": True, "scope_unclear": False, "no_code_required": None,
             "site_category": "not_site",
             "hire_rate_penalty": False, "hired_percent": hired_percent,
@@ -2765,18 +2904,9 @@ async def score_project(
                 title[:60], old_score, score, term_reason,
             )
 
-        # === v4 Идея 31: AI-инженерия / AI-маркетинг soft-модификатор ===
-        # AI_MARKETING_HARD уже отбит как hard reject выше.
-        if ai_class == "AI_MARKETING_SOFT":
-            old_score = score
-            score = max(0, score - 3)
-            ai_note = f"AI-маркетинг (1 маркер: {ai_markers[0]}): -3"
-            reason = f"{reason}; {ai_note}" if reason else ai_note
-            logger.info(
-                "AIMarketingSoft [%s]: %d→%d — %s",
-                title[:60], old_score, score, ai_note,
-            )
-        elif ai_class == "AI_ENGINEERING":
+        # === v5 идея 31 (мягкая): только AI-инженерия даёт +1 ===
+        # AI_MARKETING_HARD/SOFT больше не штрафуем — оценка по экономике.
+        if ai_class == "AI_ENGINEERING":
             old_score = score
             score = min(10, score + 1)
             ai_note = f"AI-инженерия ({ai_markers[0]}): +1"
@@ -2785,16 +2915,20 @@ async def score_project(
                 "AIEngineering [%s]: %d→%d — %s",
                 title[:60], old_score, score, ai_note,
             )
-
-        # === v4 Идея 33: pirate-агрегаторы Telegram ===
-        pirate_mod, pirate_reason = detect_pirate_aggregator(title, description)
-        if pirate_mod:
-            old_score = score
-            score = max(0, score + pirate_mod)
-            reason = f"{reason}; {pirate_reason}" if reason else pirate_reason
+        elif ai_class in ("AI_MARKETING_HARD", "AI_MARKETING_SOFT"):
+            # Только лог — без изменения скора
             logger.info(
-                "PirateAggregator [%s]: %d→%d — %s",
-                title[:60], old_score, score, pirate_reason,
+                "AIMarketingSignal [%s]: %s (без штрафа по v5)",
+                title[:60], ai_class,
+            )
+
+        # v5 откат идеи 33: pirate-агрегаторы НЕ штрафуем. Только лог-сигнал
+        # чтобы видеть факт. Оценка идёт по обычным критериям.
+        _pirate_mod, _pirate_reason = detect_pirate_aggregator(title, description)
+        if _pirate_mod:
+            logger.info(
+                "PirateAggregatorSignal [%s]: %s (без штрафа)",
+                title[:60], _pirate_reason,
             )
 
         # === v4 Идея 35: несоответствие профиля fullstack ===
@@ -2808,17 +2942,32 @@ async def score_project(
                 title[:60], old_score, score, prof_reason,
             )
 
-        # === v4 Идея 36: копирование по референсу ===
-        copy_mod, copy_reason = detect_copy_by_reference(
+        # v5 откат идеи 36: копирование по референсу — НЕ штраф.
+        # Если бюджет адекватный — нормальная работа. Экономика проверяется
+        # через budget-scope (см. Идею 41).
+
+        # === v5 Идея 39: no-code под видом разработки ===
+        nocode_mod, nocode_reason = detect_nocode_under_dev(
             title, description, budget_limit_eff,
         )
-        if copy_mod:
+        if nocode_mod:
             old_score = score
-            score = max(0, score + copy_mod)
-            reason = f"{reason}; {copy_reason}" if reason else copy_reason
+            score = max(0, score + nocode_mod)
+            reason = f"{reason}; {nocode_reason}" if reason else nocode_reason
             logger.info(
-                "CopyByReference [%s]: %d→%d — %s",
-                title[:60], old_score, score, copy_reason,
+                "NoCodeUnderDev [%s]: %d→%d — %s",
+                title[:60], old_score, score, nocode_reason,
+            )
+
+        # === v5 Идея 31: размытость ТЗ -1 ===
+        vague_mod, vague_reason = detect_vague_scope(title, description)
+        if vague_mod:
+            old_score = score
+            score = max(0, score + vague_mod)
+            reason = f"{reason}; {vague_reason}" if reason else vague_reason
+            logger.info(
+                "VagueScope [%s]: %d→%d — %s",
+                title[:60], old_score, score, vague_reason,
             )
 
         # === v4 Идея 37: MAX мессенджер +1 ===
