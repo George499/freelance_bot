@@ -2,6 +2,7 @@ import asyncio
 import logging
 import random
 import re
+from datetime import datetime
 
 import aiohttp
 import feedparser
@@ -40,6 +41,10 @@ TELEGRAM_SCORE_THRESHOLD = 5
 # (Kwork API не отдаёт published_at). Чем больше откликов / меньше времени до
 # закрытия приёма — тем ниже шанс что заказчик вообще прочитает наш отклик.
 FRESH_OFFERS_MAX = 10
+
+# Жёсткий cut-off по возрасту заказа (date_confirm).
+# Заказы старше — НЕ скорим (бессмысленно, перегружены откликами).
+MAX_ORDER_AGE_HOURS = 48
 FRESH_TIME_LEFT_MIN_SEC = 2 * 86400      # ≥ 2 дня — заказ скорее всего свежий
 LATE_OFFERS_MIN = 30
 LATE_TIME_LEFT_MAX_SEC = 12 * 3600       # < 12 ч — приём почти закрыт
@@ -358,6 +363,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
                     "possible_price_limit": item.get("possible_price_limit"),
                     "offers": item.get("offers", 0),
                     "time_left": item.get("time_left", 0),
+                    "date_confirm": item.get("date_confirm", 0),
                     "hired_percent": _extract_hired_percent(item),
                     "buyer_achievements_count": len(achievements),
                     "buyer_achievements_names": achievement_names,
@@ -390,6 +396,23 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         used_today=quota_state["responses_used_today"],
         days_until_refill=days_until_refill,
     )
+
+    # Фильтр свежести: режем заказы старше MAX_ORDER_AGE_HOURS до скоринга.
+    # Kwork сортирует страницы непредсказуемо — после получения всех страниц
+    # отсекаем старьё чтобы не тратить Haiku-токены и БД-место.
+    now_ts = int(datetime.now().timestamp())
+    age_cutoff_ts = now_ts - MAX_ORDER_AGE_HOURS * 3600
+    fresh_projects = [
+        p for p in projects
+        if p.get("date_confirm") and p["date_confirm"] >= age_cutoff_ts
+    ]
+    stats_too_old = len(projects) - len(fresh_projects)
+    if stats_too_old:
+        logger.info(
+            "FreshnessCutoff: отсеяно %d/%d заказов старше %dч",
+            stats_too_old, len(projects), MAX_ORDER_AGE_HOURS,
+        )
+    projects = fresh_projects
 
     stats = {
         "total": len(projects),
