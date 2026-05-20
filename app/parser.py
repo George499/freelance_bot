@@ -451,6 +451,25 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         hired_percent = project.get("hired_percent")
         buyer_achievements_count = project.get("buyer_achievements_count", 0)
         buyer_achievements_names = project.get("buyer_achievements_names", [])
+        user_projects_count = project.get("user_projects_count", 0)
+        offers_count = project.get("offers", 0) or 0
+
+        # Волна 3 идея 48 (доп. модификатор): 50+ откликов — коннект потерян,
+        # не отправляем уведомление вообще, даже если скор высокий. Исключение —
+        # большой бюджет (>=100k) + медалька покупателя + hire_rate > 50%.
+        if offers_count >= 50:
+            big_budget = price_limit and price_limit >= 100_000
+            strong_buyer = buyer_achievements_count >= 1 and (
+                hired_percent is not None and hired_percent > 50
+            )
+            if not (big_budget and strong_buyer):
+                stats["low_score_silenced"] += 1
+                logger.info(
+                    "HighCompetitionSkip [%s]: %d откликов — коннект потерян, тишина",
+                    title[:60], offers_count,
+                )
+                await asyncio.sleep(random.choice([1, 2, 3]))
+                continue
 
         farm_active = is_farm_mode_active()
         score_result = await score_project(
@@ -458,11 +477,12 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             description=desc,
             budget=budget_str,
             deadline=deadline_str,
-            responses_count=project.get("offers", 0),
+            responses_count=offers_count,
             anthropic_api_key=config.anthropic_api_key,
             hired_percent=hired_percent,
             buyer_achievements=buyer_achievements_count,
             farm_mode_active=farm_active,
+            user_projects_count=user_projects_count,
         )
 
         # Hard reject — тишина, только в логи
@@ -504,7 +524,17 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             no_code_required=score_result.get("no_code_required"),
         )
 
-        offers_count = project.get("offers", 0) or 0
+        # Волна 3 идея 48 (доп. модификатор): при 30-50 откликах присылаем
+        # ТОЛЬКО рекомендации (respond=True), пограничные глушим.
+        if not respond and 30 <= offers_count < 50:
+            stats["low_score_silenced"] += 1
+            logger.info(
+                "MidCompetitionBorderlineSkip [%s]: %d откликов — пограничный глушим",
+                title[:60], offers_count,
+            )
+            await asyncio.sleep(random.choice([1, 2, 3]))
+            continue
+
         freshness_emoji, freshness_label = _freshness_badge(time_left, offers_count)
 
         # P2.3: при низкой квоте не тратим патрон на 🔴 заказы (downgrade в borderline)
@@ -538,6 +568,23 @@ async def get_kwork_projects(bot: Bot, config: Settings):
                 offers_count, score_result["score"],
             )
 
+        # Волна 3 идея 47: borderline присылаем только при ключевых факторах
+        # (медалька покупателя, низкая конкуренция, или высокий скор 7+).
+        # Иначе пограничные глушим — почти никогда не превращаются в реальный отклик.
+        if not respond:
+            has_badges = bool(buyer_achievements_names)
+            low_competition = offers_count < 10
+            score_high_for_borderline = score_result["score"] >= 7
+            has_key_factors = has_badges or low_competition or score_high_for_borderline
+            if not has_key_factors:
+                stats["borderline_sent"] += 1
+                logger.info(
+                    "BorderlineNoKeyFactors [%s] score=%d offers=%d badges=%s: тишина",
+                    title[:60], score_result["score"], offers_count, has_badges,
+                )
+                await asyncio.sleep(random.choice([1, 2, 3]))
+                continue
+
         # v4 волна 1.5 рег.3: дневной лимит пограничных уведомлений.
         # Применяется ТОЛЬКО когда respond=False (рекомендации к отклику — без лимита).
         if not respond and not can_send_borderline():
@@ -549,6 +596,18 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             await asyncio.sleep(random.choice([1, 2, 3]))
             continue
 
+        # Волна 3 идея 47: для borderline сжимаем обоснование до первой части
+        # (классификация Haiku), без длинного хвоста бонусов/штрафов.
+        raw_reason = score_result.get("reason", "")
+        if not respond and raw_reason:
+            # Берём первый фрагмент до ';' — это вывод Haiku, остальное модификаторы.
+            short_reason = raw_reason.split(";", 1)[0].strip()
+            if len(short_reason) > 220:
+                short_reason = short_reason[:217] + "..."
+            display_reason = short_reason
+        else:
+            display_reason = raw_reason
+
         text = _format_kwork_message(
             title=title,
             desc=desc,
@@ -557,7 +616,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             is_ai=score_result["is_ai"],
             respond=respond,
             decision_reason=decision_reason,
-            score_reason=score_result.get("reason", ""),
+            score_reason=display_reason,
             quota=quota,
             url=kw_project_url,
             no_code_required=score_result.get("no_code_required"),

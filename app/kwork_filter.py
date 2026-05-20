@@ -826,22 +826,169 @@ PROFILE_MISMATCH_PATTERNS = (
         ),
         "SMTP/spam-protection как основное",
     ),
+    # Волна 3 идея 42: корпоративная почта на домене
+    (
+        re.compile(
+            r"корпоративн\w+\s+почт\w+\s+на\s+домен|"
+            r"настр\w+\s+почт\w+\s+(\w+\s+){0,3}(\d+\s+(адрес|ящик|почт))|"
+            r"\bmx[\s-]?запис\w+\s+(настр|сконфиг|пропис)|"
+            r"\bimap\b|\bpop3\b\s+(настр|конфиг)",
+            re.IGNORECASE,
+        ),
+        "корпоративная почта/MX",
+    ),
+    # Волна 3 идея 42: освобождение/чистка диска хостинга
+    (
+        re.compile(
+            r"освободить\s+(место|диск)\s+на\s+(хостинг|сервер)|"
+            r"почистить\s+(диск|сервер|хостинг)|"
+            r"анализ\s+диск\w+\s+(хостинг|сервер)|"
+            r"забит\s+(диск|сервер)",
+            re.IGNORECASE,
+        ),
+        "обслуживание хостинга",
+    ),
+    # Волна 3 идея 42: миграция сервера как основная задача (отдельно от dev-flow)
+    (
+        re.compile(
+            r"перенести\s+сервер\s+на\s+нов\w+\s+vps|"
+            r"миграц\w+\s+сервер\w+\s+(с\s+\w+\s+)?на\s+нов",
+            re.IGNORECASE,
+        ),
+        "миграция сервера как самостоятельная задача",
+    ),
+    # Волна 3 идея 42: выпуск SSL без deployment-контекста (cert как основная задача)
+    (
+        re.compile(
+            r"выпустить\s+ssl\s+(сертификат\w*\s+)?и\s+установить\s+на\s+хостинг|"
+            r"купить\s+ssl[\s\S]{0,30}?установить\s+на\s+(сайт|хостинг)",
+            re.IGNORECASE,
+        ),
+        "SSL без deployment-контекста",
+    ),
 )
 
 
-def detect_profile_mismatch(title: str, description: str) -> tuple[int, str]:
-    """v5 Идея 35 (мягкая): -2 при совпадении.
+# Волна 3 идея 42: whitelist для fullstack-deploy (Категория А).
+# Если в тексте есть deploy-маркер РЯДОМ с маркером нашего стека —
+# не штрафуем как профиль-mismatch, это нормальная работа fullstack-разработчика.
+_FULLSTACK_DEPLOY_VERB_RE = re.compile(
+    r"\b(развернуть|разверну|развёртывани|поднять|подними|деплой\w*|"
+    r"задеплоить|запустить\s+на\s+(сервер|vps)|поставить\s+на\s+сервер|"
+    r"настроить\s+nginx|"
+    r"настроить\s+reverse[\s-]?proxy|"
+    r"добавить\s+ssl|подключить\s+ssl|выпустить\s+ssl\s+для\s+приложен|"
+    r"привязать\s+домен)",
+    re.IGNORECASE,
+)
+_FULLSTACK_STACK_RE = re.compile(
+    r"\b(fastapi|nest\.?js|next\.?js|nuxt|nodejs|node\.js|node\b|"
+    r"python\s+(приложен|проект|сервис|бот)|"
+    r"\baiogram\b|aiohttp|"
+    r"telegram[\s-]?бот|tg[\s-]?бот|"
+    r"react|vue|express|fastify|"
+    r"docker[\s-]?compose|docker\s+контейнер|"
+    r"\bcoolify\b|\bdokku\b|\bpm2\b|\bsystemd\b|"
+    r"мо(й|его)\s+(приложен|проект|сервис|бот|api))",
+    re.IGNORECASE,
+)
 
-    С учётом Claude Code многие смежные направления реально решаются —
-    штраф мягкий, не reject. Применяется только когда задача — основной
-    фокус, не побочный компонент.
+
+def _is_fullstack_deploy_context(title: str, description: str) -> bool:
+    """Волна 3 идея 42, Категория А: deploy fullstack-проекта — НЕ mismatch."""
+    text = f"{title}\n{description}"
+    return bool(_FULLSTACK_DEPLOY_VERB_RE.search(text) and _FULLSTACK_STACK_RE.search(text))
+
+
+def detect_profile_mismatch(title: str, description: str) -> tuple[int, str]:
+    """Волна 3 идея 42: профиль-mismatch с разделением на категории A/Б.
+
+    Категория А (deploy fullstack — НЕ штрафовать): развернуть FastAPI/Next.js/
+    Node/aiogram на VPS, настроить nginx как reverse proxy, SSL для приложения,
+    Docker для проекта. Это нормальный fullstack-flow с Claude Code.
+
+    Категория Б (специализированный сисадмин/native/embedded/ML/1С — штраф -3):
+    корпоративная почта, чистка диска, миграция серверов как основное,
+    1С-программирование, native mobile, embedded и т.п.
     """
+    # Категория А: если виден deploy-контекст fullstack-приложения — пропускаем
+    if _is_fullstack_deploy_context(title, description):
+        return 0, ""
+
     text = f"{title}\n{description}"
     for regex, name in PROFILE_MISMATCH_PATTERNS:
         m = regex.search(text)
         if m:
-            return -2, f"профиль-mismatch ({name}): '{m.group(0).strip()[:60]}'"
+            return -3, f"профиль-mismatch ({name}): '{m.group(0).strip()[:60]}'"
     return 0, ""
+
+
+# === Волна 3 идея 43: B2C-услуговые сайты как прокси для хард-реджект CMS ===
+
+# Доменные паттерны / тематика — B2C-услуги, почти всегда на WP/Tilda/Битрикс
+_B2C_DOMAIN_RE = re.compile(
+    r"\b(yurist|advokat|salon|beauty|master|klinika|clinic|"
+    r"optika|optic|stomatolog|dent|"
+    r"remont(?!_|\.ru)|stroy|uslugi|avtoservis|\bsto\b|"
+    r"barber|nails|nail|spa)[a-z0-9\-]*\.(ru|com|net|info|pro|biz)"
+    r"|\b(юрист|адвокат|клиника|оптика|салон\s+(красот|спа)|"
+    r"автосервис|стоматолог|массаж|парикмахер|маникюр|барбер)\b",
+    re.IGNORECASE,
+)
+# Контекстные маркеры B2C-сайта (без явного домена)
+_B2C_CONTEXT_RE = re.compile(
+    r"сайт\s+(мастер|специалист|услуг|компани\w+\s+услуг)|"
+    r"корпоративн\w+\s+сайт(?!\s+(на|с)\s+(nestjs|next|fastapi|react|django))|"
+    r"сайт[\s-]?визитк|"
+    r"лендинг\s+услуг",
+    re.IGNORECASE,
+)
+# Маркеры доработки/правок чужого сайта
+_SITE_MODIFICATION_RE = re.compile(
+    r"добавить\s+[\w\s,]{0,40}?на\s+сайт|"
+    r"доработать\s+сайт|"
+    r"починить\s+сайт|"
+    r"поправить\s+сайт|"
+    r"обновить\s+сайт|"
+    r"внести\s+правки\s+(в\s+)?сайт|"
+    r"редактирован\w+\s+сайт",
+    re.IGNORECASE,
+)
+# Маркеры явного современного стека (исключение из B2C-штрафа)
+_EXPLICIT_MODERN_STACK_RE = re.compile(
+    r"\b(nestjs|nest\.?js|next\.?js|nuxt|fastapi|django(\s+rest)?|"
+    r"flask|fastify|express|nodejs|node\.js|react|vue|svelte|"
+    r"strapi|sanity|directus|payload\s+cms|headless)\b",
+    re.IGNORECASE,
+)
+
+
+def detect_b2c_service_site(title: str, description: str) -> tuple[int, str]:
+    """Волна 3 идея 43: B2C-услуговые сайты — почти всегда WP/Tilda/Битрикс24.
+
+    Эмпирически подтверждено на yurist-72.ru (Битрикс24). Юрист/салон/оптика/
+    клиника/автосервис «без указания стека» работают на хард-реджект CMS.
+    Если есть явный современный стек (NestJS/Next.js/Django/etc) — НЕ штрафуем.
+
+    Returns:
+        (-3, reason) при совпадении B2C-домен/контекст + site-modification без стека.
+        (0, "") иначе.
+    """
+    text = f"{title}\n{description}"
+
+    has_b2c = bool(_B2C_DOMAIN_RE.search(text) or _B2C_CONTEXT_RE.search(text))
+    if not has_b2c:
+        return 0, ""
+
+    has_site_mod = bool(_SITE_MODIFICATION_RE.search(text))
+    if not has_site_mod:
+        return 0, ""
+
+    if _EXPLICIT_MODERN_STACK_RE.search(text):
+        return 0, ""
+
+    b2c_match = _B2C_DOMAIN_RE.search(text) or _B2C_CONTEXT_RE.search(text)
+    return -3, f"B2C-услуговый сайт ('{b2c_match.group(0)[:40]}') без явного стека: -3"
 
 
 # === v4 Идея 36: копирование продукта по референсу ===
@@ -1613,17 +1760,26 @@ QUALIFYING_TERMS = (
     r"ci/cd\s+pipeline|ci[\s-]?cd[\s-]?пайплайн", r"blue[\s-]?green",
     # Frontend
     r"server[\s-]?sent\s+events|\bsse\b",
-    r"\bwebsocket", r"server\s+components|\brsc\b",
+    r"\bwebsocket\b|\bsocket\.?io\b|\brealtime\b",
+    r"server\s+components|\brsc\b",
     r"\bsuspense\b", r"app\s+router", r"\bhydration\b",
     r"web\s+vitals", r"schema\.org", r"\bhreflang\b",
-    # Telegram
+    # Telegram (волна 3 идея 48: + Telethon/Pyrogram)
     r"\baiogram\b", r"telegram\s+mini\s+app|tg[\s-]?mini[\s-]?app|tma\b",
-    r"\bmtproto\b", r"\buserbot\b",
+    r"\bmtproto\b", r"\buserbot\b", r"\btelethon\b", r"\bpyrogram\b",
     # CMS/специализированное
     r"\bstrapi\b", r"\bsanity\b", r"headless\s+cms", r"\bdirectus\b", r"\bpayload\s+cms\b",
     # Платежи и интеграции
     r"юkassa\s+marketplace|recurrent\s+(payment|billing)",
     r"\bsplitt?ing\b\s+(платеж|payments?)", r"\bescrow\b", r"webhook\s+sign",
+    # Волна 3 идея 48: дополнения
+    r"multi[\s-]?workspace", r"gtm[\s-]?логик", r"lead[\s-]?scoring",
+    r"hidden\s+mmr", r"\bmatchmaking\b",
+    r"\bdkim\b", r"\bspf\b", r"\bdmarc\b",
+    r"yandex\s+speechkit|speechkit",
+    r"whisper\s+streaming",
+    r"\bclickhouse\b", r"\bcassandra\b", r"redis\s+streams",
+    r"graphql\s+federation",
 )
 _QUALIFYING_RE = re.compile("|".join(QUALIFYING_TERMS), re.IGNORECASE)
 
@@ -1636,30 +1792,177 @@ MASS_TERMS = (
     r"\bнейросет\w+", r"искусственн\w+\s+интеллект", r"\bии\b",
     r"\bчат[\s-]?гпт\b", r"\bchatgpt\b",
     r"\bопенаи\b", r"\bopenai\b", r"\bgpt\b",
+    # Волна 3 идея 48: типовые «массовые» тематики
+    r"калькулятор\s+калори",
+    r"бот\s+для\s+записи",
 )
 _MASS_RE = re.compile("|".join(MASS_TERMS), re.IGNORECASE)
 
 
 def detect_terminology_specificity(title: str, description: str) -> tuple[int, str]:
-    """v4 раздел 7: терминологическая специфичность.
+    """Волна 3 идея 48: предиктор конкуренции по терминологической специфичности.
+
+    Главный фактор скоринга. Основан на эмпирически подтверждённой логике
+    сортировки Kwork (новые отклики сверху → массовые заказы непробиваемы
+    из-за потока поздних откликов, узкие — реальная цель).
 
     Returns:
         (modifier, reason)
-        - 3+ уникальных квалифицирующих маркеров → +2 (профессиональная задача)
-        - Только массовые без квалифицирующих → -1 (заказ для автооткликов)
-        - Иначе 0
+          HIGH competition (mass ≥2 и pro ==0, ИЛИ mass ≥3) → -5
+          LOW  competition (pro ≥2, ИЛИ pro ≥1 и mass ≤1) → +2
+          MEDIUM → 0
     """
     text = f"{title}\n{description}"
     qual_matches = {m.group(0).lower() for m in _QUALIFYING_RE.finditer(text)}
     mass_matches = {m.group(0).lower() for m in _MASS_RE.finditer(text)}
+    qual_count = len(qual_matches)
+    mass_count = len(mass_matches)
 
-    if len(qual_matches) >= 3:
-        sample = ", ".join(sorted(qual_matches)[:5])
-        return 2, f"квалифицирующая терминология ({len(qual_matches)} терминов: {sample}): +2"
-
-    if mass_matches and not qual_matches:
+    # HIGH — массовая терминология без квалифицирующей: предсказано 50+ откликов
+    if (mass_count >= 2 and qual_count == 0) or mass_count >= 3:
         sample = ", ".join(sorted(mass_matches)[:3])
-        return -1, f"только массовая терминология ({sample}) без квалифицирующих: -1"
+        return -5, (
+            f"HIGH competition (mass={mass_count}/pro={qual_count}: {sample}): -5"
+        )
+
+    # LOW — профессиональная терминология: предсказано 5-15 откликов
+    if qual_count >= 2 or (qual_count >= 1 and mass_count <= 1):
+        sample = ", ".join(sorted(qual_matches)[:5])
+        return 2, (
+            f"LOW competition (pro={qual_count}/mass={mass_count}: {sample}): +2"
+        )
+
+    return 0, ""
+
+
+# === Волна 3 идея 45: класс D (доработка чужого кода) без доступа к коду ===
+
+# Маркеры задачи класса D
+_CLASS_D_TASK_RE = re.compile(
+    r"\bпочинить\b|\bдоработ\w+\b|\bисправ\w+\b|\bоптимизирова\w+\b|"
+    r"перестал\s+работат|\bсломал\w+\b|\bбараб\w+\b|\bбарахл\w+\b|"
+    r"есть\s+готов\w+\s+код,?\s+нужно|"
+    r"у\s+меня\s+(скрипт|бот|парсер|сайт)\b[\s\S]{0,30}?(надо|нужно)|"
+    r"допилить\s+(скрипт|бот|сайт|парсер|проект)|"
+    r"переписать\s+(скрипт|бот|парсер)",
+    re.IGNORECASE,
+)
+# Маркеры доступности кода/репозитория
+_CODE_ACCESS_RE = re.compile(
+    r"github\.com/|gitlab\.com/|bitbucket\.org/|"
+    r"\bпришл\w+\s+(код|репозитори|проект|архив)|"
+    r"\bоткро(ю|ем)\s+(доступ|репозитори|код)|"
+    r"\bдам\s+(доступ|ссылк\w+\s+на\s+код)|"
+    r"исходник\w+\s+(прилож|приклад|готов)|"
+    r"описание\s+(структуры\s+)?кода",
+    re.IGNORECASE,
+)
+
+
+def detect_class_d_blind_fix(
+    title: str, description: str, budget_limit: int
+) -> tuple[int, str]:
+    """Волна 3 идея 45: класс D «починить чужое» без видимого кода — асимметричный риск.
+
+    Может оказаться полчаса работы, может — неисправимая ситуация без исходников.
+    При низком бюджете риск максимален (день за тысячу), при высоком — есть
+    запас на разбирательство.
+
+    Returns:
+        (-3, reason) если бюджет < 10k
+        (-2, reason) если бюджет 10-30k
+        (-1, reason) если бюджет ≥ 30k
+        (0, "") если код доступен или это не класс D
+    """
+    text = f"{title}\n{description}"
+    if not _CLASS_D_TASK_RE.search(text):
+        return 0, ""
+    if _CODE_ACCESS_RE.search(text):
+        return 0, ""
+
+    if budget_limit and budget_limit < 10_000:
+        return -3, f"класс D без доступа к коду, бюджет <10к ({budget_limit:,}): -3"
+    if budget_limit and budget_limit < 30_000:
+        return -2, f"класс D без доступа к коду, бюджет <30к ({budget_limit:,}): -2"
+    return -1, f"класс D без доступа к коду (бюджет {budget_limit:,}): -1"
+
+
+# === Волна 3 идея 46: микробюджет + многокомпонентная задача ===
+
+# Маркеры «компонентов» — расширенный список (включает _FUNC_BLOCK_KEYWORDS + еще)
+_MICROBUDGET_COMPONENT_RE = re.compile(
+    r"\bпарсер\b|\bпарсинг\b|"
+    r"\bадминк[аеу]\b|\bадмин[\s-]*панел|"
+    r"\bинтеграци\w+|"
+    r"\bкаталог\b|\bвитрин\w+|"
+    r"\bлич\w+\s+кабинет|"
+    r"\bоплат\w+|\bэквайринг\b|подписк\w+\s+(оплат|тариф)|"
+    r"\bкалькулятор\b|"
+    r"\bдиалог\w+\s+(сценари|с\s+пользоват)|"
+    r"\bтелеграм[\s-]?бот|\bтг[\s-]?бот\b|\bwhatsapp\b|\bвотсап\b|\bmax\b\s+мессенджер|"
+    r"\bcrm\b\s+(интеграц|подключ)|"
+    r"\bgoogle\s+sheets\b|\bgoogle\s+таблиц|"
+    r"\bgoogle\s+sheet|\bsheet\s+api|"
+    r"\bпрокси\b\s+(использ|подключ|поддерж)|"
+    r"\bчекпоинт\w+|\bретрай\w+|"
+    r"frontend\b|бэкенд\b|\bbackend\b",
+    re.IGNORECASE,
+)
+
+
+def detect_microbudget_multicomponent(
+    title: str,
+    description: str,
+    budget_limit: int,
+    farm_mode_active: bool = False,
+) -> tuple[int, str]:
+    """Волна 3 идея 46: микробюджет + многокомпонентная задача = работа в минус.
+
+    Заказы с 500-5000 ₽ и технически чистой постановкой получают высокий
+    скор от Haiku, но при многокомпонентности — почти всегда минус.
+
+    Шкала:
+        budget ≤ 1500 + 2+ компонента → -3
+        budget ≤ 3000 + 3+ компонента → -3
+        budget ≤ 5000 + 4+ компонента → -2
+
+    Исключение для отзыв-фарма: если задача малокомпонентная (≤2),
+    штраф не применяется — отзыв стоит больше денег.
+    """
+    if not budget_limit or budget_limit > 5000:
+        return 0, ""
+
+    text = f"{title}\n{description}"
+    matches = {m.group(0).lower() for m in _MICROBUDGET_COMPONENT_RE.finditer(text)}
+    components = len(matches)
+
+    if budget_limit <= 1500 and components >= 2:
+        # Отзыв-фарм исключение: при малом числе компонентов считаем как fast task
+        if farm_mode_active and components <= 2:
+            return 0, ""
+        sample = ", ".join(sorted(matches)[:3])
+        return -3, (
+            f"микробюджет {budget_limit:,} + {components} компонента "
+            f"({sample}): -3"
+        )
+
+    if budget_limit <= 3000 and components >= 3:
+        if farm_mode_active and components <= 2:
+            return 0, ""
+        sample = ", ".join(sorted(matches)[:3])
+        return -3, (
+            f"микробюджет {budget_limit:,} + {components} компонент "
+            f"({sample}): -3"
+        )
+
+    if budget_limit <= 5000 and components >= 4:
+        if farm_mode_active and components <= 2:
+            return 0, ""
+        sample = ", ".join(sorted(matches)[:3])
+        return -2, (
+            f"микробюджет {budget_limit:,} + {components} компонент "
+            f"({sample}): -2"
+        )
 
     return 0, ""
 
@@ -1670,56 +1973,68 @@ def compute_competition_modifier(
     responses_count: int,
     hired_percent: Optional[int],
     buyer_achievements: int,
+    user_projects_count: int = 0,
 ) -> tuple[int, list[str]]:
-    """v4 6.1: модификатор скора по числу откликов + уровню покупателя.
+    """Модификатор скора по конкурентной среде + уровню покупателя.
 
-    Args:
-        responses_count: число откликов на момент первой проверки.
-        hired_percent: hire_rate заказчика (0-100) или None.
-        buyer_achievements: число медалек покупателя (из achievements_list).
+    Волна 3 идея 48 (банды откликов сильнее):
+        0-10   → +1 (низкая конкуренция, окно прочтения)
+        11-30  → 0
+        31-50  → -2 (быстро наполняется)
+        51+    → -4 (коннект потерян)
 
-    Returns:
-        (modifier, reasons) — суммарный модификатор и список применённых правил.
+    Волна 3 идея 44 (hire_rate-штраф градуируется):
+        с медалькой                                      → 0 (риск оправдан)
+        проектов < 5 (мало данных)                       → 0
+        hire_rate = 0% + ≥5 проектов                     → -4 (подтверждённый собиратель КП)
+        hire_rate < 30% + ≥10 проектов                   → -3
+        hire_rate < 50%                                  → -1
 
-    Шкала откликов:
-        0-5    → +1 (первая волна)
-        6-15   → 0
-        16-30  → -1 (среднее наполнение)
-        31+    → -3 (переполнено)
-
-    Шкала покупателя:
-        0 ачивок + hire_rate < 10%  → -2 (вероятный собиратель КП)
-        0 ачивок + hire_rate 10-30% → 0 (нейтрально)
+    Шкала покупателя (бонусы за медальки сохраняются):
         1 ачивка                    → +1
         2+ ачивок                   → +2 (топ-покупатель)
     """
     modifier = 0
     reasons: list[str] = []
 
-    # Отклики
-    if responses_count <= 5:
+    # Отклики — волна 3 идея 48 банды
+    if responses_count <= 10:
         modifier += 1
-        reasons.append(f"первая волна ({responses_count} откликов): +1")
-    elif responses_count <= 15:
-        pass
+        reasons.append(f"низкая конкуренция ({responses_count} откликов): +1")
     elif responses_count <= 30:
-        modifier -= 1
-        reasons.append(f"среднее наполнение ({responses_count} откликов): -1")
+        pass
+    elif responses_count <= 50:
+        modifier -= 2
+        reasons.append(f"наполнение ({responses_count} откликов): -2")
     else:
-        modifier -= 3
-        reasons.append(f"переполнено ({responses_count} откликов): -3")
+        modifier -= 4
+        reasons.append(f"переполнено ({responses_count} откликов): -4")
 
-    # Уровень покупателя
-    if buyer_achievements == 0:
-        if hired_percent is not None and hired_percent < 10:
-            modifier -= 2
-            reasons.append(f"без медалек + hire_rate {hired_percent}%: -2 (собиратель КП)")
-    elif buyer_achievements == 1:
+    # Уровень покупателя — медальки сразу дают бонус (риск hire_rate оправдан)
+    if buyer_achievements == 1:
         modifier += 1
         reasons.append("медалька покупателя: +1")
     elif buyer_achievements >= 2:
         modifier += 2
         reasons.append(f"{buyer_achievements} медальки покупателя: +2 (топ)")
+    else:
+        # Волна 3 идея 44: градуированный штраф за hire_rate когда нет медалек
+        # Применяется только если есть достаточно данных (≥5 проектов).
+        if user_projects_count >= 5 and hired_percent is not None:
+            if hired_percent == 0:
+                modifier -= 4
+                reasons.append(
+                    f"hire_rate 0% + {user_projects_count} проектов без медалек: "
+                    f"-4 (подтверждённый собиратель КП)"
+                )
+            elif hired_percent < 30 and user_projects_count >= 10:
+                modifier -= 3
+                reasons.append(
+                    f"hire_rate {hired_percent}% + {user_projects_count} проектов: -3"
+                )
+            elif hired_percent < 50:
+                modifier -= 1
+                reasons.append(f"hire_rate {hired_percent}% без медалек: -1")
 
     return modifier, reasons
 
@@ -2549,6 +2864,7 @@ async def score_project(
     hired_percent: Optional[int] = None,
     buyer_achievements: int = 0,
     farm_mode_active: bool = False,
+    user_projects_count: int = 0,
 ) -> Dict:
     default_result = {
         "score": 5, "is_ai": False, "reason": "no API key",
@@ -2879,9 +3195,10 @@ async def score_project(
                 title[:60], old_score, score, grey_reason,
             )
 
-        # === v4 6.1: модификатор по конкурентной среде ===
+        # === v4 6.1 + волна 3 идея 44: модификатор по конкурентной среде ===
         comp_mod, comp_reasons = compute_competition_modifier(
             responses_count, hired_percent, buyer_achievements,
+            user_projects_count=user_projects_count,
         )
         if comp_mod != 0:
             old_score = score
@@ -2893,8 +3210,26 @@ async def score_project(
                 title[:60], old_score, score, comp_reason_str,
             )
 
-        # === v4 раздел 7: терминологическая специфичность ===
+        # === Волна 3 идея 48: предиктор конкуренции по терминологии ===
         term_mod, term_reason = detect_terminology_specificity(title, description)
+        # Исключение: HIGH (-5) при бюджете 100k+, медальке и hire_rate>50% —
+        # большой бюджет компенсирует низкую вероятность прочтения, смягчаем до -2.
+        if term_mod == -5:
+            high_budget = budget_limit_eff and budget_limit_eff >= 100_000
+            strong_buyer = buyer_achievements >= 1
+            high_hire = hired_percent is not None and hired_percent > 50
+            if high_budget and strong_buyer and high_hire:
+                old_term_mod = term_mod
+                term_mod = -2
+                term_reason = (
+                    f"{term_reason} → смягчено до -2 "
+                    f"(бюджет {budget_limit_eff:,}+, медальки {buyer_achievements}, "
+                    f"hire_rate {hired_percent}%)"
+                )
+                logger.info(
+                    "TerminologyHighException [%s]: %d→%d по высокому бюджету+медалькам",
+                    title[:60], old_term_mod, term_mod,
+                )
         if term_mod != 0:
             old_score = score
             score = max(0, min(10, score + term_mod))
@@ -2931,7 +3266,7 @@ async def score_project(
                 title[:60], _pirate_reason,
             )
 
-        # === v4 Идея 35: несоответствие профиля fullstack ===
+        # === v4 Идея 35 + волна 3 идея 42: несоответствие профиля fullstack ===
         prof_mod, prof_reason = detect_profile_mismatch(title, description)
         if prof_mod:
             old_score = score
@@ -2940,6 +3275,43 @@ async def score_project(
             logger.info(
                 "ProfileMismatch [%s]: %d→%d — %s",
                 title[:60], old_score, score, prof_reason,
+            )
+
+        # === Волна 3 идея 43: B2C-услуговые сайты как прокси для CMS ===
+        b2c_mod, b2c_reason = detect_b2c_service_site(title, description)
+        if b2c_mod:
+            old_score = score
+            score = max(0, score + b2c_mod)
+            reason = f"{reason}; {b2c_reason}" if reason else b2c_reason
+            logger.info(
+                "B2CServiceSite [%s]: %d→%d — %s",
+                title[:60], old_score, score, b2c_reason,
+            )
+
+        # === Волна 3 идея 45: класс D (доработка) без доступа к коду ===
+        class_d_mod, class_d_reason = detect_class_d_blind_fix(
+            title, description, budget_limit_eff,
+        )
+        if class_d_mod:
+            old_score = score
+            score = max(0, score + class_d_mod)
+            reason = f"{reason}; {class_d_reason}" if reason else class_d_reason
+            logger.info(
+                "ClassDBlind [%s]: %d→%d — %s",
+                title[:60], old_score, score, class_d_reason,
+            )
+
+        # === Волна 3 идея 46: микробюджет + многокомпонентная задача ===
+        mb_mod, mb_reason = detect_microbudget_multicomponent(
+            title, description, budget_limit_eff, farm_mode_active=farm_mode_active,
+        )
+        if mb_mod:
+            old_score = score
+            score = max(0, score + mb_mod)
+            reason = f"{reason}; {mb_reason}" if reason else mb_reason
+            logger.info(
+                "MicrobudgetMulticomp [%s]: %d→%d — %s",
+                title[:60], old_score, score, mb_reason,
             )
 
         # v5 откат идеи 36: копирование по референсу — НЕ штраф.
