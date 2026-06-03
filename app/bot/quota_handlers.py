@@ -22,10 +22,16 @@ from datetime import date
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 from aiogram.exceptions import TelegramBadRequest
 
 from app.farm_mode import is_farm_mode_active, set_farm_mode
+from app.pause_mode import is_bot_paused, set_bot_paused
 from app.quota import (
     MONTHLY_QUOTA,
     get_days_until_refill,
@@ -165,6 +171,91 @@ async def cmd_farm_status(message: Message):
         await message.answer("⚡ Отзыв-фарм: <b>ВКЛЮЧЁН</b>. Выключить: /farm_off")
     else:
         await message.answer("Отзыв-фарм: выключен. Включить: /farm_on")
+
+
+def _pause_panel_text(quota_state: dict) -> str:
+    paused = is_bot_paused()
+    farm = is_farm_mode_active()
+    used = quota_state["responses_used"]
+    remaining = MONTHLY_QUOTA - used
+    today_used = quota_state["responses_used_today"]
+    days_left = get_days_until_refill()
+    pause_line = (
+        "⏸ <b>На паузе</b> — Kwork-цикл не выполняется"
+        if paused
+        else "▶️ <b>Активен</b> — Kwork-цикл идёт каждые 10 мин"
+    )
+    farm_line = "⚡ Отзыв-фарм: ВКЛ" if farm else "Отзыв-фарм: выкл"
+    return (
+        f"{pause_line}\n"
+        f"{farm_line}\n\n"
+        f"📊 Квота: <b>{remaining}/{MONTHLY_QUOTA}</b>, "
+        f"сегодня {today_used}, {days_left} дн. до пополнения"
+    )
+
+
+def _pause_panel_keyboard() -> InlineKeyboardMarkup:
+    paused = is_bot_paused()
+    toggle_text = "▶️ Включить" if paused else "⏸ На паузу"
+    toggle_data = "bot_resume" if paused else "bot_pause"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=toggle_text, callback_data=toggle_data)]]
+    )
+
+
+@quota_router.message(Command("status"))
+async def cmd_status(message: Message):
+    """Панель управления ботом: активен / на паузе + квота + кнопка-тогл."""
+    await message.answer(
+        _pause_panel_text(get_quota()),
+        reply_markup=_pause_panel_keyboard(),
+    )
+
+
+@quota_router.message(Command("pause"))
+async def cmd_pause(message: Message):
+    """Поставить бота на паузу (Kwork-цикл пропускается)."""
+    set_bot_paused(True)
+    await message.answer(
+        _pause_panel_text(get_quota()),
+        reply_markup=_pause_panel_keyboard(),
+    )
+
+
+@quota_router.message(Command("resume"))
+async def cmd_resume(message: Message):
+    """Снять паузу — Kwork-цикл снова идёт."""
+    set_bot_paused(False)
+    await message.answer(
+        _pause_panel_text(get_quota()),
+        reply_markup=_pause_panel_keyboard(),
+    )
+
+
+@quota_router.callback_query(F.data == "bot_pause")
+async def cb_bot_pause(callback: CallbackQuery):
+    set_bot_paused(True)
+    try:
+        await callback.message.edit_text(
+            _pause_panel_text(get_quota()),
+            reply_markup=_pause_panel_keyboard(),
+        )
+    except TelegramBadRequest:
+        pass
+    await callback.answer("⏸ На паузе. Kwork-цикл не запускается.", show_alert=False)
+
+
+@quota_router.callback_query(F.data == "bot_resume")
+async def cb_bot_resume(callback: CallbackQuery):
+    set_bot_paused(False)
+    try:
+        await callback.message.edit_text(
+            _pause_panel_text(get_quota()),
+            reply_markup=_pause_panel_keyboard(),
+        )
+    except TelegramBadRequest:
+        pass
+    await callback.answer("▶️ Активен. Следующий цикл — в ближайшие 10 мин.", show_alert=False)
 
 
 @quota_router.callback_query(F.data.startswith("kw_sent:"))

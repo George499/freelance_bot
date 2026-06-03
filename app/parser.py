@@ -14,6 +14,7 @@ from app.bot.keyboards import apply_button
 from app.config_reader import Settings
 from app.db.tables import FreelancePlatform, Project
 from app.farm_mode import is_farm_mode_active
+from app.pause_mode import is_bot_paused
 from app.kwork_filter import (
     MONTHLY_QUOTA,
     generate_offer_claude,
@@ -301,6 +302,11 @@ async def get_upwork_projects(bot: Bot, config: Settings):
 
 
 async def get_kwork_projects(bot: Bot, config: Settings):
+    # Soft-pause: цикл пропускается пока флаг активен (управление через /pause).
+    if is_bot_paused():
+        logger.info("BotPaused: Kwork-цикл пропущен")
+        return
+
     kwork = Kwork(
         login=config.kw_login,
         password=config.kw_password,
