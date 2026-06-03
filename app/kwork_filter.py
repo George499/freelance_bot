@@ -901,26 +901,97 @@ def _is_fullstack_deploy_context(title: str, description: str) -> bool:
 
 
 def detect_profile_mismatch(title: str, description: str) -> tuple[int, str]:
-    """Волна 3 идея 42: профиль-mismatch с разделением на категории A/Б.
+    """Волна 4 п.3.2: штраф ТОЛЬКО для системных/низкоуровневых задач.
 
-    Категория А (deploy fullstack — НЕ штрафовать): развернуть FastAPI/Next.js/
-    Node/aiogram на VPS, настроить nginx как reverse proxy, SSL для приложения,
-    Docker для проекта. Это нормальный fullstack-flow с Claude Code.
+    По стратегии Claude Code: прикладные задачи (CRUD/UI/интеграции/парсинг/
+    доработка/скрипты/отчётность) на ЛЮБОМ стеке (Rust/Go/Tauri/VBA/C#/Java/
+    1С/Delphi) — НЕ штрафуем. Узкий стек = низкая конкуренция.
 
-    Категория Б (специализированный сисадмин/native/embedded/ML/1С — штраф -3):
-    корпоративная почта, чистка диска, миграция серверов как основное,
-    1С-программирование, native mobile, embedded и т.п.
+    Штрафуем только реально системные направления где Claude Code не заменяет
+    экспертизу: embedded, ML обучение моделей, 3D/WebGL глубокого уровня,
+    геймдев, криптотрейдинг для бирж, новые архитектуры/драйверы.
     """
-    # Категория А: если виден deploy-контекст fullstack-приложения — пропускаем
+    # Категория А (waved 3): deploy fullstack-приложения — нормальный flow.
     if _is_fullstack_deploy_context(title, description):
         return 0, ""
 
     text = f"{title}\n{description}"
-    for regex, name in PROFILE_MISMATCH_PATTERNS:
+    for regex, name in SYSTEM_LEVEL_MISMATCH_PATTERNS:
         m = regex.search(text)
         if m:
-            return -3, f"профиль-mismatch ({name}): '{m.group(0).strip()[:60]}'"
+            return -5, f"системная задача вне профиля ({name}): '{m.group(0).strip()[:60]}'"
     return 0, ""
+
+
+# Волна 4 п.3.2: только реально СИСТЕМНЫЕ направления (Claude Code не закроет).
+SYSTEM_LEVEL_MISMATCH_PATTERNS = (
+    # Embedded / IoT — нужна работа с железом, прошивки, низкий уровень
+    (
+        re.compile(
+            r"\barduino\b|\besp32\b|\besp8266\b|raspberry\s+pi\s+прошивк|"
+            r"микроконтроллер|stm32|\baltium\s+designer|"
+            r"\bazбук\w+\s+(морзе|кода)|связь\s+азбукой|"
+            r"прошивк\w+\s+(железа|устройства|плат|чип)|"
+            r"\bfpga\b|\bvhdl\b|\bverilog\b",
+            re.IGNORECASE,
+        ),
+        "embedded/IoT — работа с железом",
+    ),
+    # ML с обучением кастомных моделей с нуля (не fine-tuning готовых)
+    (
+        re.compile(
+            r"обучен\w+\s+модел\w+\s+с\s+нул|train\s+from\s+scratch|"
+            r"новая\s+архитектур\w+\s+нейросет|"
+            r"\btraining\s+pipeline|trained\s+from\s+scratch|"
+            r"phd[\s\-]?уровн|research\s+ml|академическ\w+\s+ml",
+            re.IGNORECASE,
+        ),
+        "ML обучение архитектур с нуля",
+    ),
+    # 3D/WebGL глубокий уровень (шейдеры, движки), не базовая Three.js-сцена
+    (
+        re.compile(
+            r"three\.?js\s+(сложн|шейдер|глубок|professional)|"
+            r"\bwebgl\s+(шейдер|глубок|сложн|raymarch)|"
+            r"3d[\s-]?визуализ\w+\s+(глубок|сложн|интерактивн\s+физик)|"
+            r"\bshader\b\s+(программир|разработ)|"
+            r"\bray\s+(marching|tracing)\b",
+            re.IGNORECASE,
+        ),
+        "3D/WebGL шейдеры/движок",
+    ),
+    # Gamedev на Unity/Unreal — игровые движки глубокого уровня
+    (
+        re.compile(
+            r"\bunity[\s-]?(разработ|игр|приложен|3d)|"
+            r"\bunreal\s+engine\s+(разработ|игр|пайплайн)|"
+            r"\bgodot\s+(разработ|игр)|игров\w+\s+движок\s+(разработ|с\s+нуля)",
+            re.IGNORECASE,
+        ),
+        "геймдев",
+    ),
+    # Криптотрейдинг боты для бирж — специфическая зона с финрисками
+    (
+        re.compile(
+            r"торгов\w+\s+бот\w+\s+(для|на)\s+(бирж|binance|bybit|kucoin|okx)|"
+            r"крипто[\s-]?(трейд|арбитраж)\s+бот|"
+            r"\barbitrage\s+bot|\bhft\b\s+бот|market[\s\-]?making\s+бот",
+            re.IGNORECASE,
+        ),
+        "криптотрейдинг боты для бирж",
+    ),
+    # Кастомные аллокаторы / низкоуровневая оптимизация / драйверы
+    (
+        re.compile(
+            r"кастомн\w+\s+аллокатор|custom\s+allocator|"
+            r"разработ\w+\s+драйвер|kernel\s+module|"
+            r"низкоуровнев\w+\s+оптимизац|low[\s\-]?level\s+optimiz|"
+            r"performance[\s\-]?critical\s+(systemн?|систем|kernel)",
+            re.IGNORECASE,
+        ),
+        "системная разработка / драйверы",
+    ),
+)
 
 
 # === Волна 3 идея 43: B2C-услуговые сайты как прокси для хард-реджект CMS ===
@@ -1034,6 +1105,178 @@ def detect_copy_by_reference(
     return -2, f"копирование по референсу при бюджете <100к: '{match.group(0)}'"
 
 
+# === v6 (волна 4) Группа 1: HARD REJECT — серая зона / ToS / юр.риски ===
+
+# 1.1 Парсинг маркетплейсов и работа с карточками — категоричный hard reject.
+# Исключение: официальный API под seller-аккаунтом (advert-api.wildberries.ru и т.п.)
+_MARKETPLACE_NAMES_RE = re.compile(
+    r"\bwildberries\b|\bwb\b|вайлдберр\w*|дики[ех]\s+ягод\w*|"
+    r"\bozon\b|\bозон\b|"
+    r"\bavito\b|\bавито\b|"
+    r"\byandex[\s.\-]?market\b|я[\s.\-]?маркет|яндекс[\s.\-]?маркет|"
+    r"\betsy\b|\bэтси\b|"
+    r"\bamazon\b|\bамазон|"
+    r"\bмаркетплейс\w*",
+    re.IGNORECASE,
+)
+_MARKETPLACE_ACTION_RE = re.compile(
+    r"\bпарс\w+|\bспарс\w+|\bскрейп\w*|\bscrape\w*|"
+    r"мониторинг\s+(цен|товар|конкурент|маркетплейс)|"
+    r"собрать\s+(данные|товары|отзыв|карточ|цен)|"
+    r"работа\s+с\s+карточ\w+|"
+    r"создан\w+\s+карточ\w+|"
+    r"перевыпуск\s+карточ\w+|"
+    r"найти\s+аналогичн\w+\s+товар|"
+    r"средн\w+\s+цен\w+\s+по\s+рынку|"
+    r"затян\w+\s+отзыв\w+|тянуть\s+отзыв\w+|"
+    r"выгруз\w+\s+(товар|карточ|отзыв)",
+    re.IGNORECASE,
+)
+# Whitelist: легитимная работа через официальный API под seller-аккаунтом
+_MARKETPLACE_OFFICIAL_API_RE = re.compile(
+    r"\bofficial\s+api\b|официальн\w+\s+api|"
+    r"\badvert[\s\-]?api\.wildberries|seller[\s\-]?api|"
+    r"\bseller\.wildberries|suppliers[\s\-]?api|"
+    r"\bsvoj?\s+(seller|селлер|продавец)|свой\s+(seller|селлер|кабинет\s+продавца)|"
+    r"кабинет\s+(продавца|селлера|рекламн)|"
+    r"\bnashi\s+(карточк|товар)|наши\s+(собственн\w+\s+)?(карточк|товар)",
+    re.IGNORECASE,
+)
+
+
+def detect_marketplace_work(title: str, description: str) -> Optional[str]:
+    """Волна 4 п.1.1: парсинг маркетплейсов / работа с карточками WB/Ozon/Avito/etc.
+
+    Hard reject при сочетании имени маркетплейса + действия (парсинг/мониторинг/
+    работа с карточками/перевыпуск/затянуть отзывы).
+    Исключение: официальный API под собственным seller-аккаунтом — НЕ reject.
+    """
+    text = f"{title}\n{description}"
+    if not _MARKETPLACE_NAMES_RE.search(text):
+        return None
+    if not _MARKETPLACE_ACTION_RE.search(text):
+        return None
+    if _MARKETPLACE_OFFICIAL_API_RE.search(text):
+        return None  # официальный API под seller-аккаунтом — норма
+    name_match = _MARKETPLACE_NAMES_RE.search(text)
+    action_match = _MARKETPLACE_ACTION_RE.search(text)
+    return (
+        f"маркетплейс ({name_match.group(0)}) + {action_match.group(0)[:30]} — "
+        f"парсинг чужих витрин/нарушение ToS"
+    )
+
+
+# 1.2 Парсинг мобильных приложений — reverse engineering, против Apple/Google ToS.
+_MOBILE_APP_PARSING_RE = re.compile(
+    r"(\bпарс\w+|\bспарс\w+|\bвыгруз\w+|reverse[\s\-]?engineer)[\s\S]{0,80}?"
+    r"(приложен\w+\s+(ios|android|iphone)|мобильн\w+\s+приложен|"
+    r"apps\.apple\.com|play\.google\.com|appstore|app\s+store|"
+    r"google\s+play|\bipa\b|\bapk\b)|"
+    r"(приложен\w+\s+(ios|android)|мобильн\w+\s+приложен|"
+    r"apps\.apple\.com|play\.google\.com)[\s\S]{0,80}?"
+    r"(\bпарс\w+|\bспарс\w+|\bвыгруз\w+|\bперехват\w*)",
+    re.IGNORECASE,
+)
+
+
+def detect_mobile_app_parsing(title: str, description: str) -> Optional[str]:
+    """Волна 4 п.1.2: парсинг/реверс мобильных приложений → hard reject."""
+    text = f"{title}\n{description}"
+    m = _MOBILE_APP_PARSING_RE.search(text)
+    if m:
+        return (
+            f"парсинг/реверс мобильного приложения: '{m.group(0)[:60]}' — "
+            f"против Apple/Google ToS, 272 УК РФ"
+        )
+    return None
+
+
+# 1.3 Обёртка чужого закрытого сервиса в свой API через имитацию браузера.
+_BROWSER_IMITATION_RE = re.compile(
+    r"имитир\w+\s+браузер|имитац\w+\s+браузер|"
+    r"понять\s+как\s+идут\s+запрос|"
+    r"оберну\w+\s+в\s+api|упакова\w+\s+в\s+api|"
+    r"написать\s+api\s+для\s+(google|сервис|сайт)|"
+    r"reverse[\s\-]?engineer\w*\s+(api|сервис)",
+    re.IGNORECASE,
+)
+_CLOSED_SERVICE_RE = re.compile(
+    r"google\s+flow|imagefx|image[\s\-]?fx|"
+    r"\bseedance\b|seedance\s*2|"
+    r"\bsuno\b|udio\.com|"
+    r"закрыт\w+\s+(сервис|api)|нет\s+(публичн|официальн)\w+\s+api|"
+    r"\bесли\s+получится\b",  # явный риск-сигнал — заказчик сам не уверен
+    re.IGNORECASE,
+)
+
+
+def detect_browser_imitation_wrapper(title: str, description: str) -> Optional[str]:
+    """Волна 4 п.1.3: обёртка закрытого сервиса в свой API → hard reject."""
+    text = f"{title}\n{description}"
+    if not _BROWSER_IMITATION_RE.search(text):
+        return None
+    if not _CLOSED_SERVICE_RE.search(text):
+        return None
+    return (
+        "обёртка закрытого сервиса в свой API через имитацию браузера — "
+        "обход защиты, нестабильность, юр.риск"
+    )
+
+
+# 1.4 Game botting — против EULA игр, RMT-риск.
+_GAME_BOTTING_RE = re.compile(
+    r"ферм\w+\s+(в\s+|для\s+)?(игр|game)|"
+    r"автокликер\s+для\s+игр|автоматизац\w+\s+ферм|"
+    r"макрос\w*\s+для\s+игр|"
+    r"бот\s+для\s+(аккаунт\w+\s+в\s+игр|игр\w+|game)|"
+    r"собирать\s+(jewels|gems|coins|ресурс\w+)\s+в\s+(игр|game)|"
+    r"выполнять\s+квест\w+\s+(в\s+)?(игр|на\s+аккаунт)|"
+    r"bot\s+for\s+(game|mmo|mmorpg)|"
+    r"game\s+of\s+war|clash\s+of\s+clans|brawl\s+stars|"
+    r"\bmmo\b\s+бот|\bmmorpg\b\s+бот",
+    re.IGNORECASE,
+)
+
+
+def detect_game_botting(title: str, description: str) -> Optional[str]:
+    """Волна 4 п.1.4: game botting → hard reject (против EULA, RMT-риск)."""
+    text = f"{title}\n{description}"
+    m = _GAME_BOTTING_RE.search(text)
+    if m:
+        return f"game botting ('{m.group(0)[:40]}') — против EULA игр, RMT-риск"
+    return None
+
+
+# 1.5 Обход anti-spam соцсетей — заказчик прямо говорит про блокировки.
+_ANTISPAM_BYPASS_RE = re.compile(
+    r"уже\s+блокирова\w+\s+(акк|нас)|"
+    r"соцсет\w+\s+(стал\w*\s+)?(блочит|блокирует|банит)|"
+    r"чтобы\s+не\s+(заблокирова|забанили|спалили|палиться)|"
+    r"с\s+(задержк|пинг|тайминг)\w*\s+(между\s+действиями\s+)?чтобы\s+не\s+(пали|спалил|банил)|"
+    r"сами\s+понимаете\b|"
+    r"антибан\s+(для\s+)?(соц|insta|tiktok|telegram)",
+    re.IGNORECASE,
+)
+_SOCIAL_AUTOMATION_RE = re.compile(
+    r"автоматизац\w+\s+(в\s+)?(соц|instagram|tiktok|telegram|vk|youtube|threads)|"
+    r"автоответ\w*\s+(на\s+)?(коммент|сообщен|reply)|"
+    r"\bответ\s+на\s+коммент|"
+    r"авторепост|автопостинг|массов\w+\s+(лайк|подписк|коммент|инвайт)|"
+    r"автоматическ\w+\s+(ответ|постинг|инвайт|подписк)\s+(в|на)\s+(соц|инст|insta|tg|telegram)",
+    re.IGNORECASE,
+)
+
+
+def detect_antispam_bypass(title: str, description: str) -> Optional[str]:
+    """Волна 4 п.1.5: явное намерение обхода anti-spam соцсетей → hard reject."""
+    text = f"{title}\n{description}"
+    if not _ANTISPAM_BYPASS_RE.search(text):
+        return None
+    if not _SOCIAL_AUTOMATION_RE.search(text):
+        return None
+    return "обход anti-spam соцсетей (заказчик прямо упоминает блокировки) — против ToS"
+
+
 # === v5 Идея 40: формализация криминал-категорий (hard reject) ===
 # Только реальные юридические риски (УК/КоАП РФ).
 
@@ -1105,6 +1348,118 @@ def detect_criminal_categories(title: str, description: str) -> Optional[str]:
         if m:
             return f"{label}: '{m.group(0).strip()}'"
     return None
+
+
+# === Волна 4 Группа 2.1: фильтр заказчика против новичков (-5) ===
+
+_NEWBIE_FILTER_RE = re.compile(
+    r"не\s+работаю?\s+с\s+(исполнител\w+\s+)?без\s+(заказов|отзыв|опыта)|"
+    r"только\s+(с\s+)?(проверенн\w+|опытн\w+|с\s+рейтинг)|"
+    r"только\s+(с\s+)?(\d+\+?|более\s+\d+)\s+(заказ|отзыв|зак)|"
+    r"только\s+(с\s+)?рейтинг\w+\s+от\s+\d|"
+    r"новичк\w+\s+(прошу\s+не|не)\s+(беспокои|отклика)|"
+    r"требуется\s+портфолио\s+(из\s+)?(\d+|N|N\+)\s+(работ|проект|кейс)|"
+    r"исполнител\w+\s+(уровн\w+\s+)?(восходящ\w+|высш\w+)\s+",
+    re.IGNORECASE,
+)
+
+
+def detect_newbie_filter(title: str, description: str) -> tuple[int, str]:
+    """Волна 4 п.2.1: заказчик прямо фильтрует новичков. -5.
+
+    Для профиля George (1 отзыв, без медали уровня) такие заказы = заведомый
+    отсев, коннект тратится впустую.
+    """
+    m = _NEWBIE_FILTER_RE.search(f"{title}\n{description}")
+    if m:
+        return -5, f"фильтр заказчика против новичков: '{m.group(0)[:50]}' — коннект впустую"
+    return 0, ""
+
+
+# === Волна 4 Группа 2.2: перенос инфры на исполнителя при микробюджете (-6) ===
+
+_INFRA_TRANSFER_RE = re.compile(
+    r"установк\w+\s+на\s+ваш\s+сервер|развернуть\s+у\s+вас|"
+    r"хостинг\s+(с\s+)?ваш\w+\s+сторон|"
+    r"работать\s+24/?7\s+у\s+вас|"
+    r"бот\s+должен\s+работать\s+24/?7\s+на\s+ваш|"
+    r"запустить\s+на\s+ваш\w+\s+сервер",
+    re.IGNORECASE,
+)
+_NO_INFRA_RE = re.compile(
+    r"у\s+меня\s+(нет\s+сервер|сервера\s+нет|своего\s+сервер\s+нет)|"
+    r"не\s+разбира\w+\s+в\s+(хостинг|сервер)|"
+    r"\bне\s+умею\s+(хостинг|серверы|деплой)|"
+    r"свой\s+(хостинг|сервер)\s+нет",
+    re.IGNORECASE,
+)
+
+
+def detect_infra_transfer_microbudget(
+    title: str, description: str, budget_limit: int
+) -> tuple[int, str]:
+    """Волна 4 п.2.2: перенос инфры на исполнителя за разовый микроплатёж. -6.
+
+    Триггер: установка/работа 24/7 у исполнителя + отсутствие инфры у
+    заказчика + бюджет ≤3000₽.
+    """
+    if not budget_limit or budget_limit > 3000:
+        return 0, ""
+    text = f"{title}\n{description}"
+    if not _INFRA_TRANSFER_RE.search(text):
+        return 0, ""
+    if not _NO_INFRA_RE.search(text):
+        return 0, ""
+    return -6, (
+        f"перенос инфры на исполнителя при бюджете {budget_limit:,} ₽ — "
+        f"отрицательная экономика (разовый микроплатёж против бессрочного хостинга)"
+    )
+
+
+# === Волна 4 Группа 4.1: бонус ML/RAG прикладные ===
+
+# Прикладные ML/CV/OCR-маркеры (бонус +2)
+APPLIED_ML_MARKERS = (
+    r"\byolo\b|yolov\d+",
+    r"компьютерн\w+\s+зрени|\bcomputer\s+vision\b|\bcv\b\s+(модел|задач)",
+    r"детекц\w+\s+(объект|лиц|номер)|классификац\w+\s+(объект|изображен|товар)",
+    r"\bocr\b|tesseract|paddleocr|easyocr|"
+    r"распознав\w+\s+(текст|документ|таблиц|номер|лиц)",
+    r"прогнозиров\w+\s+на\s+данных|прогноз\w+\s+(спрос|цен|временн)|"
+    r"\bregression\s+model\b|forecast(ing|ed)?",
+    r"дообучен\w+\s+модел|обучен\w+\s+модел\w+\s+под",
+    r"\bfine[\s\-]?tun\w+\b|\blora\b|\bpeft\b|\bqlora\b",
+    r"ml[\s\-]?модел\w+\s+под\s+задач",
+    r"анализ\s+данных\s+с\s+(ml|нейросет)",
+    r"\bsklearn\b|\bxgboost\b|\bcatboost\b|\blightgbm\b|"
+    r"\btensorflow\b|\bpytorch\b|\bkeras\b",
+)
+_APPLIED_ML_RE = re.compile("|".join(APPLIED_ML_MARKERS), re.IGNORECASE)
+
+# Research/PhD-уровень — бонус НЕ давать
+RESEARCH_ML_MARKERS = (
+    r"новая\s+архитектур\w+\s+нейросет",
+    r"исследовательск\w+\s+(задач|проект)",
+    r"phd[\s\-]?уровн",
+    r"научн\w+\s+(разработ|статья|публикац)",
+    r"опубликовать\s+статью",
+    r"кастомн\w+\s+аллокатор|низкоуровнев\w+\s+оптимизац\w+\s+ml",
+)
+_RESEARCH_ML_RE = re.compile("|".join(RESEARCH_ML_MARKERS), re.IGNORECASE)
+
+
+def detect_applied_ml_bonus(title: str, description: str) -> tuple[int, str]:
+    """Волна 4 п.4.1: бонус +2 за прикладной ML (YOLO/CV/OCR/fine-tuning).
+
+    НЕ давать бонус если research/PhD-маркеры.
+    """
+    text = f"{title}\n{description}"
+    if _RESEARCH_ML_RE.search(text):
+        return 0, ""
+    m = _APPLIED_ML_RE.search(text)
+    if m:
+        return 2, f"прикладной ML ({m.group(0)[:30]}): +2 (сильная зона)"
+    return 0, ""
 
 
 # === v5 Идея 39: no-code под видом разработки ===
@@ -1825,14 +2180,38 @@ def detect_terminology_specificity(title: str, description: str) -> tuple[int, s
             f"HIGH competition (mass={mass_count}/pro={qual_count}: {sample}): -5"
         )
 
-    # LOW — профессиональная терминология: предсказано 5-15 откликов
+    # LOW — профессиональная терминология: предсказано 5-15 откликов.
+    # Волна 4 п.3.1: если квалифицирующий термин виральный (OpenClaw/Hermes/
+    # Cursor/Devin и т.п.) — конкуренция всё равно высокая, бонус режется до +1.
     if qual_count >= 2 or (qual_count >= 1 and mass_count <= 1):
         sample = ", ".join(sorted(qual_matches)[:5])
+        viral = _VIRAL_TERMS_RE.search(text)
+        if viral:
+            return 1, (
+                f"квалиф ({sample}) НО виральный термин '{viral.group(0)}': +1 "
+                f"(а не +2 — туда сбегаются все кто видел ютуб)"
+            )
         return 2, (
             f"LOW competition (pro={qual_count}/mass={mass_count}: {sample}): +2"
         )
 
     return 0, ""
+
+
+# Волна 4 п.3.1: список виральных терминов — узкие но не редкие.
+VIRAL_TERMS = (
+    r"openclaw",
+    r"\bhermes\s+agent\b|hermes[\s\-]?ai",
+    r"\bcodex\b\s+(openai|api)?",
+    r"\bcursor\b\s+(ai|composer|agent|ide)?",
+    r"\bdevin\b\s+ai",
+    r"\bcline\b",
+    r"\baider\b",
+    r"\bcomfyui\b",
+    r"\bautogen\b",
+    r"\bcrewai\b",
+)
+_VIRAL_TERMS_RE = re.compile("|".join(VIRAL_TERMS), re.IGNORECASE)
 
 
 # === Волна 3 идея 45: класс D (доработка чужого кода) без доступа к коду ===
@@ -2912,6 +3291,25 @@ async def score_project(
             "breakdown": {},
         }
 
+    # === Волна 4 Группа 1: HARD REJECT (серая зона / ToS / юр.риски) ===
+    for fn, label in (
+        (detect_marketplace_work, "MarketplaceHardReject"),
+        (detect_mobile_app_parsing, "MobileAppParsingHardReject"),
+        (detect_browser_imitation_wrapper, "BrowserImitationHardReject"),
+        (detect_game_botting, "GameBottingHardReject"),
+        (detect_antispam_bypass, "AntispamBypassHardReject"),
+    ):
+        hr_reason = fn(title, description)
+        if hr_reason:
+            logger.info("%s [%s]: %s", label, title[:60], hr_reason)
+            return {
+                "score": 0, "is_ai": is_ai, "reason": hr_reason,
+                "hard_reject": True, "scope_unclear": False, "no_code_required": None,
+                "site_category": "not_site",
+                "hire_rate_penalty": False, "hired_percent": hired_percent,
+                "breakdown": {},
+            }
+
     # v5 Идея 40: криминал-категории (УК/КоАП РФ) — hard reject
     criminal = detect_criminal_categories(title, description)
     if criminal:
@@ -3239,12 +3637,12 @@ async def score_project(
                 title[:60], old_score, score, term_reason,
             )
 
-        # === v5 идея 31 (мягкая): только AI-инженерия даёт +1 ===
+        # === Волна 4 п.4.1: AI-инженерия +2 (RAG/embeddings/function calling) ===
         # AI_MARKETING_HARD/SOFT больше не штрафуем — оценка по экономике.
         if ai_class == "AI_ENGINEERING":
             old_score = score
-            score = min(10, score + 1)
-            ai_note = f"AI-инженерия ({ai_markers[0]}): +1"
+            score = min(10, score + 2)
+            ai_note = f"AI-инженерия ({ai_markers[0]}): +2 (сильная зона)"
             reason = f"{reason}; {ai_note}" if reason else ai_note
             logger.info(
                 "AIEngineering [%s]: %d→%d — %s",
@@ -3255,6 +3653,41 @@ async def score_project(
             logger.info(
                 "AIMarketingSignal [%s]: %s (без штрафа по v5)",
                 title[:60], ai_class,
+            )
+
+        # === Волна 4 п.4.1: прикладной ML/CV/OCR +2 ===
+        ml_mod, ml_reason = detect_applied_ml_bonus(title, description)
+        if ml_mod:
+            old_score = score
+            score = min(10, score + ml_mod)
+            reason = f"{reason}; {ml_reason}" if reason else ml_reason
+            logger.info(
+                "AppliedML [%s]: %d→%d — %s",
+                title[:60], old_score, score, ml_reason,
+            )
+
+        # === Волна 4 п.2.1: фильтр заказчика против новичков -5 ===
+        nb_mod, nb_reason = detect_newbie_filter(title, description)
+        if nb_mod:
+            old_score = score
+            score = max(0, score + nb_mod)
+            reason = f"{reason}; {nb_reason}" if reason else nb_reason
+            logger.info(
+                "NewbieFilter [%s]: %d→%d — %s",
+                title[:60], old_score, score, nb_reason,
+            )
+
+        # === Волна 4 п.2.2: перенос инфры на исполнителя при микробюджете -6 ===
+        infra_mod, infra_reason = detect_infra_transfer_microbudget(
+            title, description, budget_limit_eff,
+        )
+        if infra_mod:
+            old_score = score
+            score = max(0, score + infra_mod)
+            reason = f"{reason}; {infra_reason}" if reason else infra_reason
+            logger.info(
+                "InfraTransferMicrobudget [%s]: %d→%d — %s",
+                title[:60], old_score, score, infra_reason,
             )
 
         # v5 откат идеи 33: pirate-агрегаторы НЕ штрафуем. Только лог-сигнал
