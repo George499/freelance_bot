@@ -137,6 +137,7 @@ def _format_kwork_message(
     offers_count: int = 0,
     buyer_achievement_names: list[str] | None = None,
     farm_mode_active: bool = False,
+    competition_tier: str | None = None,
 ) -> str:
     unknowns = critical_unknowns or []
     is_quali = len(unknowns) >= QUALI_UNKNOWNS_THRESHOLD
@@ -177,6 +178,11 @@ def _format_kwork_message(
     header = f"{cat_badge}  {status}" if cat_badge else status
 
     badges = []
+    # Волна 5 (2.2): пометка узкая ниша / широкое мясо
+    if competition_tier == "narrow":
+        badges.append("🎯 узкая ниша")
+    elif competition_tier == "wide":
+        badges.append("🌊 широкое мясо")
     type_badge = ORDER_TYPE_BADGES.get(order_type) if order_type else None
     if type_badge:
         badges.append(f"{type_badge[0]} {type_badge[1]}")
@@ -449,7 +455,15 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         title = project.get("title", "")
         price = project.get("price") or 0
         price_limit = project.get("possible_price_limit") or price
-        budget_str = f"{price:,} – {price_limit:,} ₽"
+        # Волна 5 (1.2): верхняя граница на Kwork — артефакт (x3 от нижней при
+        # галочке "можно предлагать больше"), НЕ реальный бюджет. Реальный
+        # бюджет = нижняя граница. В скоринг отдаём только её, в карточке
+        # помечаем верх как потолок Kwork.
+        budget_scoring = f"{price:,} ₽"
+        if price_limit and price_limit > price:
+            budget_str = f"{price:,} ₽ (верх {price_limit:,} — потолок Kwork, не бюджет)"
+        else:
+            budget_str = f"{price:,} ₽"
 
         time_left = project.get("time_left") or 0
         deadline_str = f"{time_left // 86400} дней" if time_left else "не указан"
@@ -464,7 +478,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         # не отправляем уведомление вообще, даже если скор высокий. Исключение —
         # большой бюджет (>=100k) + медалька покупателя + hire_rate > 50%.
         if offers_count >= 50:
-            big_budget = price_limit and price_limit >= 100_000
+            big_budget = price and price >= 100_000  # волна 5: по нижней границе
             strong_buyer = buyer_achievements_count >= 1 and (
                 hired_percent is not None and hired_percent > 50
             )
@@ -481,7 +495,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         score_result = await score_project(
             title=title,
             description=desc,
-            budget=budget_str,
+            budget=budget_scoring,
             deadline=deadline_str,
             responses_count=offers_count,
             anthropic_api_key=config.anthropic_api_key,
@@ -558,10 +572,10 @@ async def get_kwork_projects(bot: Bot, config: Settings):
                 f"низкая квота ({quota['remaining']}) + поздний заказ — не тратим патрон"
             )
 
-        # ⚡ Быстрые деньги: верх бюджета 25-60k, срок ≤2 дней, скор ≥7,
-        # откликов <30 и это НЕ AI-задача.
+        # ⚡ Быстрые деньги: реальный бюджет (нижняя граница) 25-60k, срок ≤2 дней,
+        # скор ≥7, откликов <30 и это НЕ AI-задача. (Волна 5: по нижней, не по потолку.)
         is_quick_cash = (
-            25000 <= price_limit <= 60000
+            25000 <= price <= 60000
             and 0 < time_left <= 2 * 86400
             and score_result["score"] >= 7
             and offers_count < 30
@@ -638,6 +652,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             offers_count=offers_count,
             buyer_achievement_names=buyer_achievements_names,
             farm_mode_active=farm_active,
+            competition_tier=score_result.get("competition_tier"),
         )
 
         if respond:

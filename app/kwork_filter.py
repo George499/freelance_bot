@@ -44,7 +44,6 @@ DEVELOPER_PROFILE = """Профиль разработчика:
 - AI-интеграции в собственном коде
 - Чат-боты с AI-контекстом и памятью
 - Telegram/Discord/VK боты на Python (aiogram/pyrogram) — это основной инструмент, НЕ серая зона
-- Парсеры сайтов/маркетплейсов (Wildberries, Ozon и т.п.) на Python с aiogram-фронтом — прямое попадание
 - Real-time на Socket.IO
 - Админки, дашборды, личные кабинеты с RBAC
 - Fullstack с нуля
@@ -57,7 +56,8 @@ DEVELOPER_PROFILE = """Профиль разработчика:
 ПОДХОДИТ:
 - Telegram/Discord/VK боты (Node.js/TypeScript или Python/aiogram) — ПРЯМОЕ попадание
 - REST API, бэкенд, интеграции
-- Парсеры с обработкой/интерфейсом при 40к+
+- Парсинг ТОЛЬКО собственных данных заказчика или через официальный API под его аккаунтом.
+  Парсинг чужих маркетплейсов/витрин/контактов/поисковой выдачи — НЕ подходит (серая зона, reject).
 - Простые RN/Flutter при 80к+
 - Сайты/лендинги ПОД КЛЮЧ когда макета НЕТ и заказчик готов к собственному дизайну разработчика
 
@@ -1233,9 +1233,90 @@ _GAME_BOTTING_RE = re.compile(
     r"выполнять\s+квест\w+\s+(в\s+)?(игр|на\s+аккаунт)|"
     r"bot\s+for\s+(game|mmo|mmorpg)|"
     r"game\s+of\s+war|clash\s+of\s+clans|brawl\s+stars|"
-    r"\bmmo\b\s+бот|\bmmorpg\b\s+бот",
+    r"\bmmo\b\s+бот|\bmmorpg\b\s+бот|"
+    # Волна 5 (2.1): Minecraft / AFK / обход защиты игрового сервера
+    r"\bminecraft\b|\bмайнкрафт\w*|"
+    r"\bafk\b|\bафк\b|"
+    r"обход\w*\s+(афк|afk|защит\w+\s+сервера)|"
+    r"анти[\s-]?афк|anti[\s-]?afk|"
+    r"(рыбалк|фарм)\w*\s+(в\s+)?(minecraft|майнкрафт|игр)|"
+    r"ботинг|game[\s-]?botting|"
+    r"бот\s+для\s+(roblox|роблокс|wow|world\s+of\s+warcraft|tarkov|тарков|dota|cs)",
     re.IGNORECASE,
 )
+
+# Волна 5 (2.1): сбор контактов компаний/людей для рассылок (152-ФЗ).
+_CONTACT_HARVEST_RE = re.compile(
+    r"спарс\w+\s+(телефон|почт|email|e-mail|контакт|номер)|"
+    r"собрать\s+(базу\s+)?(телефон|почт|email|e-mail|контакт|номеров)|"
+    r"парс\w+\s+(телефон|почт|email|контакт)|"
+    r"сбор\s+(контакт|телефон|email|почт)\w*\s+(компани|клиент|людей|организац)|"
+    r"кто\s+реклам\w+\s+в\s+(директ|яндекс|google|гугл)|"
+    r"база\s+(контакт|телефон|email|почт)\w*\s+для\s+рассылк|"
+    r"лидген\w*\s+баз|собрать\s+лиды\s+(из|с)\s+",
+    re.IGNORECASE,
+)
+
+
+def detect_contact_harvest(title: str, description: str) -> Optional[str]:
+    """Волна 5 (2.1): сбор контактов для рассылок → hard reject (152-ФЗ)."""
+    m = _CONTACT_HARVEST_RE.search(f"{title}\n{description}")
+    if m:
+        return f"сбор контактов для рассылок ('{m.group(0)[:40]}') — нарушение 152-ФЗ"
+    return None
+
+
+# Волна 5 (1.4): парсинг поисковой выдачи (смена региона + ключи) → серая зона.
+_SERP_PARSING_RE = re.compile(
+    r"парс\w+\s+(выдач|поиск\w+\s+выдач|серп|serp)|"
+    r"парс\w+\s+(яндекс|google|гугл)\s*(поиск|выдач|серп)?|"
+    r"мен\w+\s+регион\w*\s+и\s+(вбива|парс|собира)|"
+    r"сбор\s+позиц\w+\s+(в\s+)?(яндекс|google|гугл|поиск)|"
+    r"парс\w+\s+поисков\w+\s+(результат|подсказ)",
+    re.IGNORECASE,
+)
+
+
+def detect_serp_parsing(title: str, description: str) -> Optional[str]:
+    """Волна 5 (1.4): парсинг поисковой выдачи → hard reject (обход ToS)."""
+    m = _SERP_PARSING_RE.search(f"{title}\n{description}")
+    if m:
+        return f"парсинг поисковой выдачи ('{m.group(0)[:40]}') — обход ToS поисковика"
+    return None
+
+
+# Волна 5 (1.5): незаполненный шаблон с {плейсхолдерами} в фигурных скобках.
+_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{[a-zA-Zа-яА-Я_][\w\s]{1,30}\}")
+
+
+def detect_template_placeholders(title: str, description: str) -> Optional[str]:
+    """Волна 5 (1.5): описание содержит {плейсхолдеры} — незаполненный шаблон."""
+    text = f"{title}\n{description}"
+    matches = _TEMPLATE_PLACEHOLDER_RE.findall(text)
+    if len(matches) >= 2:
+        return f"незаполненный шаблон-заготовка (плейсхолдеры: {', '.join(matches[:3])})"
+    return None
+
+
+# Волна 5 (1.5): pixel-perfect вёрстка по чужому макету / копия сайта / HTML-письма.
+_PIXEL_PERFECT_RE = re.compile(
+    r"pixel[\s-]?perfect|пиксель[\s-]?перфект|"
+    r"вёрстк\w+\s+по\s+(макет|psd|figma|фигм|образц)|"
+    r"сверста\w+\s+по\s+(макет|psd|figma|фигм|образц)|"
+    r"html[\s-]?письм\w+\s+по\s+(образц|шаблон|макет|демо)|"
+    r"(аналог|копи\w+)\s+сайт\w+\s+(как|по\s+образц|tilda|тильд)?|"
+    r"сделать\s+как\s+(вот\s+)?этот\s+сайт|"
+    r"свёрстать\s+(лендинг|страниц)\s+по\s+готов\w+\s+дизайн",
+    re.IGNORECASE,
+)
+
+
+def detect_pixel_perfect(title: str, description: str) -> Optional[str]:
+    """Волна 5 (1.5): pixel-perfect вёрстка по чужому макету → не наше."""
+    m = _PIXEL_PERFECT_RE.search(f"{title}\n{description}")
+    if m:
+        return f"pixel-perfect вёрстка по чужому макету ('{m.group(0)[:40]}') — не профиль"
+    return None
 
 
 def detect_game_botting(title: str, description: str) -> Optional[str]:
@@ -2910,12 +2991,18 @@ L. Калибровка budget-vs-scope на ВЕРХНИХ бюджетах (15
 БАЗОВЫЙ СКОР:
 
 Стек (до 4):
-+2 прямое совпадение (Next.js/NestJS/TS/PostgreSQL) ИЛИ Python/aiogram бот ИЛИ парсер+веб-интерфейс
++2 прямое совпадение (Next.js/NestJS/TS/PostgreSQL) ИЛИ Python/aiogram бот
 +1 серая зона (Vue→React, мобилка)
-+1 сильная сторона (AI на своём коде, real-time, админка, WB/Ozon-парсер с Excel-отчётом)
++1 сильная сторона (AI на своём коде, real-time, админка, дашборд)
 
-Бюджет (до 3):
-+3 верхняя ≥100к, +2 70-100к, +1 50-70к, 0 <50к
+ВАЖНО про парсинг (волна 5): парсинг САМ ПО СЕБЕ НЕ плюс и НЕ "класс A".
+- Парсинг чужих маркетплейсов/витрин/контактов/поисковой выдачи = серая зона,
+  скор НЕ выше 3 (а явные кейсы уже отсечены python-фильтром до Haiku).
+- Парсинг собственных данных заказчика или через официальный API под его
+  аккаунтом = нейтрально, оценивается по стеку/бюджету как обычная задача.
+
+Бюджет (до 3) — ТОЛЬКО по реальной (нижней) границе, верх Kwork игнорируется:
++3 ≥100к, +2 70-100к, +1 50-70к, 0 <50к
 
 AI (до 2):
 +2 Claude/GPT/LLM/RAG/MCP с конкретным скоупом
@@ -2934,6 +3021,42 @@ AI (до 2):
 ИТОГ = базовый + penalty.
 
 9-10 обязательно, 7-8 рекомендую, 5-6 пропуск, <5 пропуск.
+
+=== КРИТЕРИЙ ОТБОРА (волна 5 — смысловое ядро) ===
+У разработчика профиль novice: 1 отзыв, без медали уровня, 30 коннектов/мес.
+Каждый коннект ценен. Откликаться стоит ТОЛЬКО когда есть РЕАЛЬНЫЙ шанс что нас
+прочитают и выберут — а не "технически потяну".
+
+ГЛАВНОЕ: на ШИРОКИХ заказах (массовая тема — "сайт", "бот", "лендинг",
+"ИИ-агент для бизнеса", "парсинг") мы СТРУКТУРНО проигрываем. Туда набегают
+десятки откликов, включая ветеранов с весом (сотни отзывов, медали, топ-рейтинг).
+Заказчик при прочих равных выберет проверенного. Наш отклик утонет, коннект
+потрачен в никуда. Поэтому понижать скор широких заказов ДАЖЕ если задача
+чистая по стеку и технически нам подходит.
+
+ЦЕЛИМСЯ в УЗКИЕ ниши, где ветеранов нет и большинство фрилансеров пасуют:
+специфические профессиональные технологии/задачи (Traccar, M365/Graph API, VBA,
+Tarantool, ClickHouse, CatBoost/прикладной ML, ТНВЭД/таможня, узкие интеграции).
+Там даже новичка прочитают — конкуренции с весом нет. Это наш реальный шанс.
+
+Различай "широкое мясо" и "узкую нишу" НЕ по сложности задачи, а по тому,
+СКОЛЬКО исполнителей с весом туда побегут. Чистый по стеку, но широкий заказ
+(массовый телеграм-бот, типовой лендинг) → понижать. Непонятный массам, узкий
+заказ → поднимать.
+
+КРИТЕРИЙ-1 (жёсткий скип): если заказчик ставит КЛЮЧЕВЫМ требованием опыт
+которого у разработчика объективно нет (high-load на миллионы пользователей,
+обучение CV-моделей детекции, real-time телефония, fundamental research) —
+скип ДАЖЕ при родном стеке. Прикладные задачи на любом стеке (включая
+незнакомый — Rust, Go, VBA, Traccar) закрываются через Claude Code и НЕ
+штрафуются за "стек вне профиля".
+
+БОНУСЫ за сильные зоны (поднимать приоритет):
++2 RAG / AI-агенты (RAG, vector search, embeddings, поиск по базе знаний,
+   AI-ассистент по документам, function calling, structured output)
++1/+2 прикладной ML (обучение модели под задачу, YOLO, детекция/классификация,
+   CatBoost, OCR, прогнозирование, fine-tuning/LORA)
+   Оговорка: бонус ТОЛЬКО за прикладные ML/RAG, НЕ за фундаментальный research.
 
 ПРИМЕРЫ КАЛИБРОВКИ (нестандартные формулировки про сайты/лендинги):
 
@@ -3014,10 +3137,13 @@ PRE-CHECK:
 
 Тематическое попадание (+1, один из классов):
 - Класс A — простые приложения/боты/скрипты:
-  парсеры открытых данных в CSV/Excel/JSON;
   простые Telegram-боты (уведомления, FAQ, калькулятор, приём заявок);
   скрипты автоматизации (обработка файлов, конвертации);
   утилиты для Excel/Google Sheets, Apps Script.
+  ВАЖНО (волна 5): парсинг — НЕ автоматически "класс A". Парсинг чужих
+  маркетплейсов/витрин/контактов/поисковой выдачи = серая зона (reject,
+  обычно отсечён до Haiku). Бонус +1 только за парсинг СОБСТВЕННЫХ данных
+  заказчика или официальный API под его аккаунтом.
 - Класс B — серверные/инфраструктурные:
   деплой на VPS/VDS, nginx, SSL через Certbot;
   Docker / docker-compose для существующего проекта;
@@ -3291,13 +3417,17 @@ async def score_project(
             "breakdown": {},
         }
 
-    # === Волна 4 Группа 1: HARD REJECT (серая зона / ToS / юр.риски) ===
+    # === Волна 4-5 Группа 1: HARD REJECT (серая зона / ToS / юр.риски / мусор) ===
     for fn, label in (
         (detect_marketplace_work, "MarketplaceHardReject"),
         (detect_mobile_app_parsing, "MobileAppParsingHardReject"),
         (detect_browser_imitation_wrapper, "BrowserImitationHardReject"),
         (detect_game_botting, "GameBottingHardReject"),
         (detect_antispam_bypass, "AntispamBypassHardReject"),
+        (detect_contact_harvest, "ContactHarvestHardReject"),       # волна 5 (2.1)
+        (detect_serp_parsing, "SerpParsingHardReject"),             # волна 5 (1.4)
+        (detect_template_placeholders, "TemplatePlaceholderSkip"),  # волна 5 (1.5)
+        (detect_pixel_perfect, "PixelPerfectSkip"),                 # волна 5 (1.5)
     ):
         hr_reason = fn(title, description)
         if hr_reason:
@@ -3637,6 +3767,15 @@ async def score_project(
                 title[:60], old_score, score, term_reason,
             )
 
+        # Волна 5 (2.2): пометка узкий / широкий для карточки.
+        # term_mod > 0 → узкая ниша (pro-термины), < 0 → широкое мясо (mass).
+        if term_mod > 0:
+            competition_tier = "narrow"
+        elif term_mod < 0:
+            competition_tier = "wide"
+        else:
+            competition_tier = "medium"
+
         # === Волна 4 п.4.1: AI-инженерия +2 (RAG/embeddings/function calling) ===
         # AI_MARKETING_HARD/SOFT больше не штрафуем — оценка по экономике.
         if ai_class == "AI_ENGINEERING":
@@ -3826,6 +3965,7 @@ async def score_project(
             "category": category,
             "score_big": score_big_raw,
             "score_fast": score_fast_raw,
+            "competition_tier": competition_tier,
         }
     except Exception as exc:
         logger.warning("Scoring error for '%s': %s", title[:60], exc)
