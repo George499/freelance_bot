@@ -18,9 +18,10 @@ Callback:
 """
 
 import logging
-from datetime import date
+import re
+from datetime import date, datetime
 
-from aiogram import F, Router
+from aiogram import F, Router, html
 from aiogram.filters import Command, CommandObject
 from aiogram.types import (
     CallbackQuery,
@@ -30,7 +31,14 @@ from aiogram.types import (
 )
 from aiogram.exceptions import TelegramBadRequest
 
+from app.config_reader import Settings
+from app.db.tables import Project
 from app.farm_mode import is_farm_mode_active, set_farm_mode
+from app.kwork_filter import (
+    categorize_by_budget,
+    generate_offer_claude,
+    recommend_dump_price,
+)
 from app.pause_mode import is_bot_paused, set_bot_paused
 from app.quota import (
     MONTHLY_QUOTA,
@@ -41,6 +49,7 @@ from app.quota import (
     reset_today,
     set_remaining,
 )
+from kwork import Kwork
 
 logger = logging.getLogger(__name__)
 quota_router = Router()
@@ -256,6 +265,117 @@ async def cb_bot_resume(callback: CallbackQuery):
     except TelegramBadRequest:
         pass
     await callback.answer("▶️ Активен. Следующий цикл — в ближайшие 10 мин.", show_alert=False)
+
+
+def _kwork_id_from_url(url: str) -> str | None:
+    m = re.search(r"/projects/(\d+)", url or "")
+    return m.group(1) if m else None
+
+
+@quota_router.callback_query(F.data.startswith("kw_recheck:"))
+async def cb_kwork_recheck(callback: CallbackQuery, config: Settings):
+    """Волна 5 (1.1): перепроверить число откликов + показать прирост с находки."""
+    internal_id = callback.data.split(":", 1)[1]
+    project = await Project.objects().where(Project.id == int(internal_id)).first()
+    if not project:
+        await callback.answer("Заказ не найден в базе", show_alert=True)
+        return
+
+    kw_id = _kwork_id_from_url(project.url)
+    if not kw_id:
+        await callback.answer("Не удалось определить ID заказа", show_alert=True)
+        return
+
+    await callback.answer("Проверяю актуальные отклики…", show_alert=False)
+    try:
+        kwork = Kwork(
+            login=config.kw_login,
+            password=config.kw_password,
+            phone_last=config.kw_phone_last,
+        )
+        token = await kwork.token
+        resp = await kwork.api_request(
+            method="post", api_method="project", id=kw_id, token=token,
+        )
+        await kwork.close()
+        data = resp.get("response") if isinstance(resp, dict) else None
+        current_offers = int(data.get("offers", 0)) if data else None
+    except Exception as exc:
+        logger.warning("Recheck error [%s]: %s", kw_id, exc)
+        await callback.message.answer("⚠️ Не удалось перепроверить (ошибка Kwork API).")
+        return
+
+    if current_offers is None:
+        await callback.message.answer("⚠️ Заказ недоступен (возможно снят).")
+        return
+
+    n0 = int(project.offers_at_first or 0)
+    delta = current_offers - n0
+    # Δt в минутах с момента находки
+    try:
+        elapsed_min = max(1, int((datetime.now() - project.first_seen_at).total_seconds() // 60))
+    except Exception:
+        elapsed_min = None
+
+    project.offers_rechecked = current_offers
+    await project.save()
+
+    speed_note = ""
+    if elapsed_min:
+        per_15 = delta / elapsed_min * 15
+        if per_15 > 15:
+            speed_note = "🌊 быстрый рост — массовый, вероятно скип"
+        elif per_15 < 4:
+            speed_note = "🎯 медленный рост — узкий, наш кандидат"
+        else:
+            speed_note = "🟡 средний рост"
+
+    elapsed_txt = f"за {elapsed_min} мин" if elapsed_min else ""
+    await callback.message.answer(
+        f"🔄 Отклики: было {n0} → стало {current_offers} (+{delta}) {elapsed_txt}\n"
+        f"{speed_note}"
+    )
+
+
+@quota_router.callback_query(F.data.startswith("kw_genoffer:"))
+async def cb_kwork_genoffer(callback: CallbackQuery, config: Settings):
+    """Волна 5 (1.1): сгенерировать черновик отклика по правилам George."""
+    internal_id = callback.data.split(":", 1)[1]
+    project = await Project.objects().where(Project.id == int(internal_id)).first()
+    if not project:
+        await callback.answer("Заказ не найден в базе", show_alert=True)
+        return
+    if not config.anthropic_api_key:
+        await callback.answer("ANTHROPIC_API_KEY не задан", show_alert=True)
+        return
+
+    await callback.answer("Генерирую черновик…", show_alert=False)
+
+    price = int(project.kwork_price or 0)
+    category = categorize_by_budget(price, price)
+    is_fast = category == "FAST"
+    budget_str = f"{price:,} ₽" if price else "не указан"
+
+    offer = await generate_offer_claude(
+        title=project.title,
+        description=project.description or "",
+        budget=budget_str,
+        anthropic_api_key=config.anthropic_api_key,
+        is_fast=is_fast,
+    )
+    if not offer:
+        await callback.message.answer("⚠️ Не удалось сгенерировать отклик, попробуй ещё раз.")
+        return
+
+    price_line = ""
+    rec = recommend_dump_price(price, is_fast)
+    if rec:
+        price_line = f"\n\n💰 Рекомендую цену: <b>{rec:,} ₽</b> (ниже вилки, набор отзывов)"
+
+    await callback.message.answer(
+        f"✍️ <b>Черновик отклика</b> (проверь и поправь перед отправкой):\n\n"
+        f"{html.quote(offer)}{price_line}"
+    )
 
 
 @quota_router.callback_query(F.data.startswith("kw_sent:"))

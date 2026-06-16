@@ -46,6 +46,18 @@ def _migrate_sqlite_columns() -> None:
             logging.getLogger(__name__).info(
                 "DB migration: added project.first_seen_at"
             )
+        # Волна 5: колонки для кнопок и динамики откликов
+        _log = logging.getLogger(__name__)
+        for col, ddl in (
+            ("kwork_price", "ALTER TABLE project ADD COLUMN kwork_price INTEGER DEFAULT 0"),
+            ("offers_at_first", "ALTER TABLE project ADD COLUMN offers_at_first INTEGER DEFAULT 0"),
+            ("offers_rechecked", "ALTER TABLE project ADD COLUMN offers_rechecked INTEGER DEFAULT -1"),
+            ("recheck_done", "ALTER TABLE project ADD COLUMN recheck_done INTEGER DEFAULT 0"),
+        ):
+            if col not in cols:
+                cur.execute(ddl)
+                conn.commit()
+                _log.info("DB migration: added project.%s", col)
     finally:
         conn.close()
 

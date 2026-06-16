@@ -27,6 +27,11 @@ class Project(Table, db=DB):
     description = Text(required=True)
     freelance_platform = Varchar(choices=FreelancePlatform, required=True)
     first_seen_at = Timestamp(default=datetime.now)
+    # Волна 5: данные для кнопок (генерация отклика, перепроверка) и динамики
+    kwork_price = BigInt(default=0)          # нижняя граница бюджета (реальный)
+    offers_at_first = BigInt(default=0)      # N0 — число откликов при находке
+    offers_rechecked = BigInt(default=-1)    # N1 при перепроверке (-1 = не было)
+    recheck_done = BigInt(default=0)         # 0 = ждёт авто-перепроверки, 1 = сделана
 
 
 class PremiumUser(Table, db=DB):

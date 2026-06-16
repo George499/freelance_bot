@@ -78,18 +78,30 @@ UPWORK_TEMPLATE = (
 
 
 def _kwork_action_keyboard(project_id: int, project_url: str) -> InlineKeyboardMarkup:
-    """Клавиатура под рекомендованными заказами — с кнопками учёта квоты."""
+    """Клавиатура под рекомендованными заказами (волна 5).
+
+    Кнопки действий вместо бесполезных "Открыть/Пропустить":
+    - Перепроверить отклики (повторный замер + прирост)
+    - Сгенерировать отклик (черновик по правилам George)
+    - Отправил отклик (учёт квоты) — оставлена, реально нужна.
+    Ссылка на заказ остаётся в тексте карточки.
+    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🔗 Открыть на Kwork", url=project_url)],
+            [
+                InlineKeyboardButton(
+                    text="🔄 Перепроверить отклики",
+                    callback_data=f"kw_recheck:{project_id}",
+                ),
+                InlineKeyboardButton(
+                    text="✍️ Сгенерировать отклик",
+                    callback_data=f"kw_genoffer:{project_id}",
+                ),
+            ],
             [
                 InlineKeyboardButton(
                     text="✅ Отправил отклик",
                     callback_data=f"kw_sent:{project_id}",
-                ),
-                InlineKeyboardButton(
-                    text="🚫 Пропустить",
-                    callback_data=f"kw_skip:{project_id}",
                 ),
             ],
         ]
@@ -450,6 +462,10 @@ async def get_kwork_projects(bot: Bot, config: Settings):
 
         kw_project.description = desc
         kw_project.freelance_platform = FreelancePlatform.KWORK
+        # Волна 5: сохраняем реальную цену (нижняя граница) и N0 откликов
+        # для кнопок (генерация отклика, перепроверка) и динамики (5c).
+        kw_project.kwork_price = project.get("price") or 0
+        kw_project.offers_at_first = project.get("offers", 0) or 0
         await kw_project.save()
 
         title = project.get("title", "")
