@@ -30,8 +30,9 @@ class Project(Table, db=DB):
     # Волна 5: данные для кнопок (генерация отклика, перепроверка) и динамики
     kwork_price = BigInt(default=0)          # нижняя граница бюджета (реальный)
     offers_at_first = BigInt(default=0)      # N0 — число откликов при находке
-    offers_rechecked = BigInt(default=-1)    # N1 при перепроверке (-1 = не было)
-    recheck_done = BigInt(default=0)         # 0 = ждёт авто-перепроверки, 1 = сделана
+    offers_rechecked = BigInt(default=-1)    # последнее N при перепроверке (-1 = не было)
+    recheck_done = BigInt(default=0)         # счётчик авто-замеров динамики (0-4)
+    next_recheck_at = BigInt(default=0)      # unix ts следующего авто-замера (0 = не запланирован)
 
 
 class PremiumUser(Table, db=DB):

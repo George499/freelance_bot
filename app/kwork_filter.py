@@ -4010,6 +4010,55 @@ async def score_project(
         }
 
 
+# === Волна 5c: динамика роста откликов ===
+
+# Расписание авто-замеров (минуты от находки заказа): первый час 3 точки + 6ч.
+RECHECK_SCHEDULE_MIN = (15, 45, 90, 360)
+
+
+def next_recheck_delay_min(stage: int) -> Optional[int]:
+    """Минуты до следующего замера для данной стадии (0-based). None = замеры окончены."""
+    if 0 <= stage < len(RECHECK_SCHEDULE_MIN):
+        return RECHECK_SCHEDULE_MIN[stage]
+    return None
+
+
+def classify_offer_dynamics(n0: int, n1: int, elapsed_min: int) -> tuple[str, str]:
+    """Волна 5c: классификация скорости роста откликов.
+
+    Args:
+        n0: число откликов при находке.
+        n1: число откликов сейчас.
+        elapsed_min: минут прошло с находки.
+
+    Returns:
+        (verdict, note): verdict ∈ {"fast", "slow", "medium"}.
+          fast  — мясорубка (≥25 за час экстраполяцией), коннект утонет.
+          slow  — узкая ниша (<10 за час), наш кандидат.
+          medium — средний.
+
+    Логика George: за час набежало 25-30 → смысла нет; за час ~10 → интересно.
+    """
+    delta = max(0, n1 - n0)
+    if elapsed_min <= 0:
+        return "medium", "нет данных по времени"
+    per_hour = delta / elapsed_min * 60
+
+    if per_hour >= 25:
+        return "fast", (
+            f"🌊 быстрый рост (+{delta} за {elapsed_min}мин ≈ {per_hour:.0f}/час) "
+            f"— мясорубка, коннект утонет"
+        )
+    if per_hour < 10:
+        return "slow", (
+            f"🎯 медленный рост (+{delta} за {elapsed_min}мин ≈ {per_hour:.0f}/час) "
+            f"— узкая ниша, наш кандидат"
+        )
+    return "medium", (
+        f"🟡 средний рост (+{delta} за {elapsed_min}мин ≈ {per_hour:.0f}/час)"
+    )
+
+
 # Волна 5: маркеры дебаг-задачи (придержать рецепт починки до заказа)
 _DEBUG_TASK_RE = re.compile(
     r"почему\s+не\s+работает|не\s+работает\s+\w+|перестал\w*\s+работа|"

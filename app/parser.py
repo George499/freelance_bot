@@ -17,7 +17,10 @@ from app.farm_mode import is_farm_mode_active
 from app.pause_mode import is_bot_paused
 from app.kwork_filter import (
     MONTHLY_QUOTA,
+    RECHECK_SCHEDULE_MIN,
+    classify_offer_dynamics,
     generate_offer_claude,
+    next_recheck_delay_min,
     quota_status,
     score_project,
     should_respond,
@@ -319,6 +322,96 @@ async def get_upwork_projects(bot: Bot, config: Settings):
             await asyncio.sleep(random.choice([1, 2, 3]))
 
 
+async def _process_pending_rechecks(bot: Bot, config: Settings, kwork, token) -> None:
+    """Волна 5c: авто-замеры динамики откликов по расписанию 15/45/90/360 мин.
+
+    Перепроверяет только заказы которые были показаны (next_recheck_at > 0).
+    На каждом замере запрашивает актуальные offers, классифицирует скорость
+    роста и шлёт уведомление при значимом вердикте (мясорубка / узкая ниша).
+    """
+    now_ts = int(datetime.now().timestamp())
+    pending = (
+        await Project.objects()
+        .where(
+            (Project.freelance_platform == FreelancePlatform.KWORK)
+            & (Project.next_recheck_at > 0)
+            & (Project.next_recheck_at <= now_ts)
+            & (Project.recheck_done < len(RECHECK_SCHEDULE_MIN))
+        )
+        .limit(10)  # safety: не больше 10 перепроверок за цикл (нагрузка на Kwork)
+    )
+    for proj in pending:
+        kw_id = None
+        m = re.search(r"/projects/(\d+)", proj.url or "")
+        if m:
+            kw_id = m.group(1)
+        if not kw_id:
+            proj.next_recheck_at = 0  # битый url — снять с расписания
+            await proj.save()
+            continue
+
+        try:
+            resp = await kwork.api_request(
+                method="post", api_method="project", id=kw_id, token=token,
+            )
+            data = resp.get("response") if isinstance(resp, dict) else None
+            current = int(data.get("offers", 0)) if data else None
+        except Exception as exc:
+            logger.warning("RecheckCycle error [%s]: %s", kw_id, exc)
+            current = None
+
+        if current is None:
+            # Заказ недоступен/снят — снимаем с расписания.
+            proj.next_recheck_at = 0
+            await proj.save()
+            continue
+
+        n0 = int(proj.offers_at_first or 0)
+        try:
+            elapsed_min = max(1, int((datetime.now() - proj.first_seen_at).total_seconds() // 60))
+        except Exception:
+            elapsed_min = (proj.recheck_done + 1) * 15
+
+        verdict, note = classify_offer_dynamics(n0, current, elapsed_min)
+        stage = int(proj.recheck_done) + 1
+        proj.offers_rechecked = current
+        proj.recheck_done = stage
+
+        # Планируем следующий замер или завершаем.
+        delay = next_recheck_delay_min(stage)
+        is_final = delay is None
+        # Мясорубка — прекращаем замеры досрочно (динамика ясна).
+        if verdict == "fast":
+            proj.next_recheck_at = 0
+        elif is_final:
+            proj.next_recheck_at = 0
+        else:
+            proj.next_recheck_at = int(proj.first_seen_at.timestamp()) + delay * 60
+        await proj.save()
+
+        # Уведомляем только при значимом сигнале, без спама на каждый замер:
+        #  - быстрый рост (мясорубка) — один раз, как только обнаружен;
+        #  - на финальном замере если медленный (узкий, ещё актуален).
+        notify = verdict == "fast" or (is_final and verdict == "slow")
+        if notify:
+            try:
+                await bot.send_message(
+                    chat_id=config.tg_group,
+                    message_thread_id=config.tg_topic_id,
+                    text=(
+                        f"📈 Динамика откликов: <b>{html.quote(proj.title or '')[:60]}</b>\n"
+                        f"{note}\n🔗 {proj.url}"
+                    ),
+                )
+            except Exception as exc:
+                logger.warning("Recheck notify failed [%s]: %s", kw_id, exc)
+        logger.info(
+            "RecheckCycle [%s] stage=%d n0=%d→n1=%d verdict=%s",
+            (proj.title or "")[:50], stage, n0, current, verdict,
+        )
+        await asyncio.sleep(random.choice([1, 2]))
+
+
 async def get_kwork_projects(bot: Bot, config: Settings):
     # Soft-pause: цикл пропускается пока флаг активен (управление через /pause).
     if is_bot_paused():
@@ -332,6 +425,12 @@ async def get_kwork_projects(bot: Bot, config: Settings):
     )
     token = await kwork.token
     categories_ids = config.kw_categories
+
+    # Волна 5c: сначала отрабатываем отложенные авто-замеры динамики откликов.
+    try:
+        await _process_pending_rechecks(bot, config, kwork, token)
+    except Exception as exc:
+        logger.warning("pending rechecks failed: %s", exc)
 
     raw_projects = await kwork.api_request(
         method="post",
@@ -689,6 +788,14 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             message_thread_id=config.tg_topic_id,
             reply_markup=keyboard,
         )
+
+        # Волна 5c: заказ показан → ставим на авто-замер динамики откликов.
+        # Первый замер через RECHECK_SCHEDULE_MIN[0] минут от находки.
+        kw_project.recheck_done = 0
+        kw_project.next_recheck_at = int(
+            kw_project.first_seen_at.timestamp()
+        ) + RECHECK_SCHEDULE_MIN[0] * 60
+        await kw_project.save()
 
         # Генерация черновика отклика временно отключена — user разбирает
         # вручную в Claude-чате. Раскомментировать когда промпт доведём.

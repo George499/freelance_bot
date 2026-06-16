@@ -53,6 +53,7 @@ def _migrate_sqlite_columns() -> None:
             ("offers_at_first", "ALTER TABLE project ADD COLUMN offers_at_first INTEGER DEFAULT 0"),
             ("offers_rechecked", "ALTER TABLE project ADD COLUMN offers_rechecked INTEGER DEFAULT -1"),
             ("recheck_done", "ALTER TABLE project ADD COLUMN recheck_done INTEGER DEFAULT 0"),
+            ("next_recheck_at", "ALTER TABLE project ADD COLUMN next_recheck_at INTEGER DEFAULT 0"),
         ):
             if col not in cols:
                 cur.execute(ddl)
