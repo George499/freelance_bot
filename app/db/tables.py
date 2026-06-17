@@ -33,6 +33,7 @@ class Project(Table, db=DB):
     offers_rechecked = BigInt(default=-1)    # последнее N при перепроверке (-1 = не было)
     recheck_done = BigInt(default=0)         # счётчик авто-замеров динамики (0-4)
     next_recheck_at = BigInt(default=0)      # unix ts следующего авто-замера (0 = не запланирован)
+    tg_message_id = BigInt(default=0)        # id карточки в Telegram — авто-замер цепляем reply'ем
 
 
 class PremiumUser(Table, db=DB):

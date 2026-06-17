@@ -36,6 +36,7 @@ from app.db.tables import Project
 from app.farm_mode import is_farm_mode_active, set_farm_mode
 from app.kwork_filter import (
     categorize_by_budget,
+    classify_offer_dynamics,
     generate_offer_claude,
     recommend_dump_price,
 )
@@ -320,15 +321,8 @@ async def cb_kwork_recheck(callback: CallbackQuery, config: Settings):
     project.offers_rechecked = current_offers
     await project.save()
 
-    speed_note = ""
-    if elapsed_min:
-        per_15 = delta / elapsed_min * 15
-        if per_15 > 15:
-            speed_note = "🌊 быстрый рост — массовый, вероятно скип"
-        elif per_15 < 4:
-            speed_note = "🎯 медленный рост — узкий, наш кандидат"
-        else:
-            speed_note = "🟡 средний рост"
+    # Та же формула, что и в авто-замерах — чтобы вердикты не расходились.
+    _verdict, speed_note = classify_offer_dynamics(n0, current_offers, elapsed_min or 0)
 
     elapsed_txt = f"за {elapsed_min} мин" if elapsed_min else ""
     await callback.message.answer(

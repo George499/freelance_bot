@@ -322,6 +322,23 @@ async def get_upwork_projects(bot: Bot, config: Settings):
             await asyncio.sleep(random.choice([1, 2, 3]))
 
 
+async def _recheck_reply(bot: Bot, config: Settings, proj, body: str) -> None:
+    """Шлёт уведомление reply'ем под исходную карточку заказа.
+
+    Если карточка удалена — улетит обычным сообщением (allow_sending_without_reply).
+    """
+    try:
+        await bot.send_message(
+            chat_id=config.tg_group,
+            message_thread_id=config.tg_topic_id,
+            text=f"<b>{html.quote(proj.title or '')[:60]}</b>\n{body}\n🔗 {proj.url}",
+            reply_to_message_id=proj.tg_message_id or None,
+            allow_sending_without_reply=True,
+        )
+    except Exception as exc:
+        logger.warning("Recheck reply failed: %s", exc)
+
+
 async def _process_pending_rechecks(bot: Bot, config: Settings, kwork, token) -> None:
     """Волна 5c: авто-замеры динамики откликов по расписанию 15/45/90/360 мин.
 
@@ -350,20 +367,43 @@ async def _process_pending_rechecks(bot: Bot, config: Settings, kwork, token) ->
             await proj.save()
             continue
 
+        time_left = None
+        order_gone = False
         try:
             resp = await kwork.api_request(
                 method="post", api_method="project", id=kw_id, token=token,
             )
             data = resp.get("response") if isinstance(resp, dict) else None
-            current = int(data.get("offers", 0)) if data else None
+            if data:
+                current = int(data.get("offers", 0))
+                tl = data.get("time_left")
+                time_left = tl if isinstance(tl, (int, float)) else None
+            else:
+                # API ответил, но заказа нет → снят/удалён (не сетевой сбой).
+                current = None
+                order_gone = isinstance(resp, dict)
         except Exception as exc:
             logger.warning("RecheckCycle error [%s]: %s", kw_id, exc)
             current = None
 
         if current is None:
-            # Заказ недоступен/снят — снимаем с расписания.
+            # Заказ недоступен — снимаем с расписания. Если это явное удаление
+            # (API ответил пустым), сообщаем под карточкой; сетевой сбой — молча.
             proj.next_recheck_at = 0
             await proj.save()
+            if order_gone:
+                await _recheck_reply(
+                    bot, config, proj, "❌ заказ снят или удалён — отклик уже не отправить"
+                )
+            continue
+
+        # Приём откликов завершён (дедлайн вышел / заказчик закрыл досрочно).
+        if time_left is not None and time_left <= 0:
+            proj.next_recheck_at = 0
+            await proj.save()
+            await _recheck_reply(
+                bot, config, proj, "🔒 приём откликов завершён — заказ закрыт"
+            )
             continue
 
         n0 = int(proj.offers_at_first or 0)
@@ -394,17 +434,7 @@ async def _process_pending_rechecks(bot: Bot, config: Settings, kwork, token) ->
         #  - на финальном замере если медленный (узкий, ещё актуален).
         notify = verdict == "fast" or (is_final and verdict == "slow")
         if notify:
-            try:
-                await bot.send_message(
-                    chat_id=config.tg_group,
-                    message_thread_id=config.tg_topic_id,
-                    text=(
-                        f"📈 Динамика откликов: <b>{html.quote(proj.title or '')[:60]}</b>\n"
-                        f"{note}\n🔗 {proj.url}"
-                    ),
-                )
-            except Exception as exc:
-                logger.warning("Recheck notify failed [%s]: %s", kw_id, exc)
+            await _recheck_reply(bot, config, proj, f"📈 {note}")
         logger.info(
             "RecheckCycle [%s] stage=%d n0=%d→n1=%d verdict=%s",
             (proj.title or "")[:50], stage, n0, current, verdict,
@@ -782,7 +812,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             # v4 волна 1.5 рег.3: инкремент дневного счётчика borderline.
             increment_borderline()
 
-        await bot.send_message(
+        sent = await bot.send_message(
             chat_id=config.tg_group,
             text=text,
             message_thread_id=config.tg_topic_id,
@@ -791,6 +821,8 @@ async def get_kwork_projects(bot: Bot, config: Settings):
 
         # Волна 5c: заказ показан → ставим на авто-замер динамики откликов.
         # Первый замер через RECHECK_SCHEDULE_MIN[0] минут от находки.
+        # message_id карточки — чтобы авто-замер прилетел reply'ем под неё.
+        kw_project.tg_message_id = sent.message_id
         kw_project.recheck_done = 0
         kw_project.next_recheck_at = int(
             kw_project.first_seen_at.timestamp()

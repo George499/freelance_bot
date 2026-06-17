@@ -4023,8 +4023,17 @@ def next_recheck_delay_min(stage: int) -> Optional[int]:
     return None
 
 
+# Абсолютные пороги конкуренции (перебивают темп — вердикт монотонен по n1).
+HIGH_OFFERS_ABS = 40  # ≥ этого = мясорубка/скип независимо от темпа (см. память)
+LOW_OFFERS_ABS = 15   # узкая ниша (наш кандидат) — только пока откликов меньше
+
+
 def classify_offer_dynamics(n0: int, n1: int, elapsed_min: int) -> tuple[str, str]:
-    """Волна 5c: классификация скорости роста откликов.
+    """Волна 5c: классификация конкуренции по заказу.
+
+    Учитывает И абсолютное число откликов, И темп роста — абсолют главнее,
+    поэтому вердикт монотонен: заказ не «возвращается в норму» при поздней
+    перепроверке (откликов только прибавляется).
 
     Args:
         n0: число откликов при находке.
@@ -4033,29 +4042,31 @@ def classify_offer_dynamics(n0: int, n1: int, elapsed_min: int) -> tuple[str, st
 
     Returns:
         (verdict, note): verdict ∈ {"fast", "slow", "medium"}.
-          fast  — мясорубка (≥25 за час экстраполяцией), коннект утонет.
-          slow  — узкая ниша (<10 за час), наш кандидат.
-          medium — средний.
+          fast  — мясорубка: ≥40 откликов ИЛИ ≥25/час, коннект утонет.
+          slow  — узкая ниша: <15 откликов И темп <10/час, наш кандидат.
+          medium — всё прочее.
 
-    Логика George: за час набежало 25-30 → смысла нет; за час ~10 → интересно.
+    Логика George: 30-35 откликов — уже много (скип), за час ~10 → интересно.
     """
     delta = max(0, n1 - n0)
-    if elapsed_min <= 0:
-        return "medium", "нет данных по времени"
-    per_hour = delta / elapsed_min * 60
+    per_hour = delta / elapsed_min * 60 if elapsed_min > 0 else None
+    rate_txt = f", +{delta} за {elapsed_min}мин ≈ {per_hour:.0f}/час" if per_hour is not None else ""
 
-    if per_hour >= 25:
+    # Абсолют главнее темпа: накопившаяся толпа — мясорубка, даже если рост затих.
+    if n1 >= HIGH_OFFERS_ABS:
         return "fast", (
-            f"🌊 быстрый рост (+{delta} за {elapsed_min}мин ≈ {per_hour:.0f}/час) "
-            f"— мясорубка, коннект утонет"
+            f"🌊 уже {n1} откликов{rate_txt} — мясорубка, коннект утонет"
         )
-    if per_hour < 10:
+    if per_hour is not None and per_hour >= 25:
+        return "fast", (
+            f"🌊 быстрый рост ({n1} откликов{rate_txt}) — мясорубка, коннект утонет"
+        )
+    if per_hour is not None and per_hour < 10 and n1 < LOW_OFFERS_ABS:
         return "slow", (
-            f"🎯 медленный рост (+{delta} за {elapsed_min}мин ≈ {per_hour:.0f}/час) "
-            f"— узкая ниша, наш кандидат"
+            f"🎯 {n1} откликов, темп низкий{rate_txt} — узкая ниша, наш кандидат"
         )
     return "medium", (
-        f"🟡 средний рост (+{delta} за {elapsed_min}мин ≈ {per_hour:.0f}/час)"
+        f"🟡 {n1} откликов{rate_txt}"
     )
 
 
