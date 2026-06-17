@@ -138,7 +138,8 @@ def reset_today() -> dict:
 
 
 # v4 волна 1.5 рег.3: дневной лимит пограничных уведомлений.
-BORDERLINE_DAILY_LIMIT = 2
+# Поднят 2→4 (после волны 5 воронка стала жёстче, пробуем шире).
+BORDERLINE_DAILY_LIMIT = 4
 
 
 def borderline_sent_today() -> int:
