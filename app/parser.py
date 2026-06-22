@@ -322,21 +322,46 @@ async def get_upwork_projects(bot: Bot, config: Settings):
             await asyncio.sleep(random.choice([1, 2, 3]))
 
 
-async def _recheck_reply(bot: Bot, config: Settings, proj, body: str) -> None:
-    """Шлёт уведомление reply'ем под исходную карточку заказа.
+async def _recheck_edit_card(
+    bot: Bot, config: Settings, proj, body: str, collapse: bool = False
+) -> None:
+    """Волна 5.1 (1.6): дописывает динамику в ИСХОДНУЮ карточку через edit,
+    а не шлёт новое сообщение — лента не раздувается.
 
-    Если карточка удалена — улетит обычным сообщением (allow_sending_without_reply).
+    - обычный замер: card_text + строка динамики (ссылка на заказ сохраняется,
+      она уже внутри card_text — 1.1-bis);
+    - collapse=True (мясорубка / заказ снят / закрыт): карточка сворачивается
+      до заголовка + пометки + ссылки, чтобы не занимать место.
+    Если edit невозможен (нет message_id / сообщение удалено) — только лог,
+    нового сообщения НЕ шлём (цель 1.6 — короткая лента).
     """
+    if not proj.tg_message_id:
+        logger.info("RecheckEdit skip [%s]: нет message_id", (proj.title or "")[:40])
+        return
+
+    if collapse:
+        new_text = (
+            f"<b>{html.quote(proj.title or '')[:80]}</b>\n"
+            f"{body}\n🔗 {proj.url}"
+        )
+    else:
+        base = proj.card_text or (
+            f"<b>{html.quote(proj.title or '')[:80]}</b>\n🔗 {proj.url}"
+        )
+        new_text = f"{base}\n\n{body}"
+
+    # Кнопки действий сохраняем (recheck/genoffer/sent), ссылка — в тексте.
+    keyboard = _kwork_action_keyboard(proj.id, proj.url)
     try:
-        await bot.send_message(
+        await bot.edit_message_text(
             chat_id=config.tg_group,
-            message_thread_id=config.tg_topic_id,
-            text=f"<b>{html.quote(proj.title or '')[:60]}</b>\n{body}\n🔗 {proj.url}",
-            reply_to_message_id=proj.tg_message_id or None,
-            allow_sending_without_reply=True,
+            message_id=proj.tg_message_id,
+            text=new_text[:4096],
+            reply_markup=keyboard,
         )
     except Exception as exc:
-        logger.warning("Recheck reply failed: %s", exc)
+        # "message is not modified" / "message to edit not found" — не критично.
+        logger.info("RecheckEdit [%s]: edit не прошёл (%s)", (proj.title or "")[:40], exc)
 
 
 async def _process_pending_rechecks(bot: Bot, config: Settings, kwork, token) -> None:
@@ -392,8 +417,10 @@ async def _process_pending_rechecks(bot: Bot, config: Settings, kwork, token) ->
             proj.next_recheck_at = 0
             await proj.save()
             if order_gone:
-                await _recheck_reply(
-                    bot, config, proj, "❌ заказ снят или удалён — отклик уже не отправить"
+                await _recheck_edit_card(
+                    bot, config, proj,
+                    "❌ заказ снят или удалён — отклик уже не отправить",
+                    collapse=True,
                 )
             continue
 
@@ -401,8 +428,10 @@ async def _process_pending_rechecks(bot: Bot, config: Settings, kwork, token) ->
         if time_left is not None and time_left <= 0:
             proj.next_recheck_at = 0
             await proj.save()
-            await _recheck_reply(
-                bot, config, proj, "🔒 приём откликов завершён — заказ закрыт"
+            await _recheck_edit_card(
+                bot, config, proj,
+                "🔒 приём откликов завершён — заказ закрыт",
+                collapse=True,
             )
             continue
 
@@ -429,12 +458,18 @@ async def _process_pending_rechecks(bot: Bot, config: Settings, kwork, token) ->
             proj.next_recheck_at = int(proj.first_seen_at.timestamp()) + delay * 60
         await proj.save()
 
-        # Уведомляем только при значимом сигнале, без спама на каждый замер:
-        #  - быстрый рост (мясорубка) — один раз, как только обнаружен;
-        #  - на финальном замере если медленный (узкий, ещё актуален).
-        notify = verdict == "fast" or (is_final and verdict == "slow")
-        if notify:
-            await _recheck_reply(bot, config, proj, f"📈 {note}")
+        # Обновляем карточку через edit (1.6) только при значимом сигнале:
+        #  - быстрый рост (мясорубка) → сворачиваем карточку (collapse);
+        #  - финальный замер с медленным ростом (узкий, актуален) → дописываем
+        #    строку динамики в карточку.
+        if verdict == "fast":
+            await _recheck_edit_card(
+                bot, config, proj,
+                f"🌊 МЯСОРУБКА: {note} — коннект утонет, скип",
+                collapse=True,
+            )
+        elif is_final and verdict == "slow":
+            await _recheck_edit_card(bot, config, proj, f"📈 {note}")
         logger.info(
             "RecheckCycle [%s] stage=%d n0=%d→n1=%d verdict=%s",
             (proj.title or "")[:50], stage, n0, current, verdict,
@@ -599,16 +634,21 @@ async def get_kwork_projects(bot: Bot, config: Settings):
 
         title = project.get("title", "")
         price = project.get("price") or 0
-        price_limit = project.get("possible_price_limit") or price
-        # Волна 5 (1.2): верхняя граница на Kwork — артефакт (x3 от нижней при
-        # галочке "можно предлагать больше"), НЕ реальный бюджет. Реальный
-        # бюджет = нижняя граница. В скоринг отдаём только её, в карточке
-        # помечаем верх как потолок Kwork.
+        # Волна 5 (1.2/1.2-bis): верхняя граница Kwork — артефакт (x3 при галочке
+        # "можно больше"), не бюджет. Показываем и скорим ТОЛЬКО нижнюю границу.
+        # Потолок не показываем совсем — он только засоряет карточку.
         budget_scoring = f"{price:,} ₽"
-        if price_limit and price_limit > price:
-            budget_str = f"{price:,} ₽ (верх {price_limit:,} — потолок Kwork, не бюджет)"
-        else:
-            budget_str = f"{price:,} ₽"
+        budget_str = f"{price:,} ₽"
+
+        # Волна 5 (1.4-bis): нижняя рамка бюджета 5000₽. Заказы дешевле системно
+        # дают мусор (размытые ТЗ, случайные заказчики), а коннект стоит столько
+        # же. Демпинг ради отзыва работает на нормальных задачах от ~5к, не на
+        # дешёвке за 500-1500₽. price=0 (бюджет не указан) — пропускаем в скоринг.
+        if 0 < price < 5000:
+            stats["low_score_silenced"] += 1
+            logger.info("LowBudgetSkip [%s]: бюджет %d ₽ < 5000 — тишина", title[:60], price)
+            await asyncio.sleep(random.choice([1, 2, 3]))
+            continue
 
         time_left = project.get("time_left") or 0
         deadline_str = f"{time_left // 86400} дней" if time_left else "не указан"
@@ -728,8 +768,8 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         )
         if is_quick_cash:
             logger.info(
-                "QuickCash [%s]: limit=%d, time_left=%dh, offers=%d, score=%d",
-                title[:60], price_limit, time_left // 3600,
+                "QuickCash [%s]: price=%d, time_left=%dh, offers=%d, score=%d",
+                title[:60], price, time_left // 3600,
                 offers_count, score_result["score"],
             )
 
@@ -821,8 +861,9 @@ async def get_kwork_projects(bot: Bot, config: Settings):
 
         # Волна 5c: заказ показан → ставим на авто-замер динамики откликов.
         # Первый замер через RECHECK_SCHEDULE_MIN[0] минут от находки.
-        # message_id карточки — чтобы авто-замер прилетел reply'ем под неё.
+        # message_id + текст карточки — чтобы дописывать динамику через edit (1.6).
         kw_project.tg_message_id = sent.message_id
+        kw_project.card_text = text
         kw_project.recheck_done = 0
         kw_project.next_recheck_at = int(
             kw_project.first_seen_at.timestamp()

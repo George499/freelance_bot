@@ -303,11 +303,11 @@ async def cb_kwork_recheck(callback: CallbackQuery, config: Settings):
         current_offers = int(data.get("offers", 0)) if data else None
     except Exception as exc:
         logger.warning("Recheck error [%s]: %s", kw_id, exc)
-        await callback.message.answer("⚠️ Не удалось перепроверить (ошибка Kwork API).")
+        await callback.answer("⚠️ Не удалось перепроверить (ошибка Kwork API).", show_alert=True)
         return
 
     if current_offers is None:
-        await callback.message.answer("⚠️ Заказ недоступен (возможно снят).")
+        await callback.answer("⚠️ Заказ недоступен (возможно снят).", show_alert=True)
         return
 
     n0 = int(project.offers_at_first or 0)
@@ -324,11 +324,23 @@ async def cb_kwork_recheck(callback: CallbackQuery, config: Settings):
     # Та же формула, что и в авто-замерах — чтобы вердикты не расходились.
     _verdict, speed_note = classify_offer_dynamics(n0, current_offers, elapsed_min or 0)
 
+    # Волна 5.1 (1.6/1.1-bis): редактируем САМУ карточку (callback.message), а не
+    # шлём новое сообщение. Дописываем строку динамики, сохраняем кнопки и ссылку.
     elapsed_txt = f"за {elapsed_min} мин" if elapsed_min else ""
-    await callback.message.answer(
+    dyn_line = (
         f"🔄 Отклики: было {n0} → стало {current_offers} (+{delta}) {elapsed_txt}\n"
         f"{speed_note}"
     )
+    try:
+        base = callback.message.html_text
+        new_text = f"{base}\n\n{dyn_line}"
+        await callback.message.edit_text(
+            new_text[:4096],
+            reply_markup=callback.message.reply_markup,
+        )
+    except Exception as exc:
+        logger.info("Recheck edit failed [%s]: %s", kw_id, exc)
+        await callback.answer(dyn_line, show_alert=True)
 
 
 @quota_router.callback_query(F.data.startswith("kw_genoffer:"))

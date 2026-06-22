@@ -55,6 +55,7 @@ def _migrate_sqlite_columns() -> None:
             ("recheck_done", "ALTER TABLE project ADD COLUMN recheck_done INTEGER DEFAULT 0"),
             ("next_recheck_at", "ALTER TABLE project ADD COLUMN next_recheck_at INTEGER DEFAULT 0"),
             ("tg_message_id", "ALTER TABLE project ADD COLUMN tg_message_id INTEGER DEFAULT 0"),
+            ("card_text", "ALTER TABLE project ADD COLUMN card_text TEXT DEFAULT ''"),
         ):
             if col not in cols:
                 cur.execute(ddl)
