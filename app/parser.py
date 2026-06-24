@@ -840,14 +840,13 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             competition_tier=score_result.get("competition_tier"),
         )
 
+        # Волна 5.1 (баг-фикс): кнопки действий (перепроверить/сгенерировать/
+        # отправил) на ВСЕХ показанных карточках — и GO, и borderline. Раньше
+        # borderline получали бесполезную "Открыть на Kwork" без recheck/genoffer.
+        keyboard = _kwork_action_keyboard(kw_project.id, kw_project_url)
         if respond:
-            keyboard = _kwork_action_keyboard(kw_project.id, kw_project_url)
             stats["recommended"] += 1
         else:
-            btn_data = {"id": kw_project.id, "lang": "ru", "username": config.bot_username}
-            keyboard = apply_button(
-                text="Открыть на Kwork", url=kw_project_url, data=btn_data
-            )
             stats["borderline_sent"] += 1
             # v4 волна 1.5 рег.3: инкремент дневного счётчика borderline.
             increment_borderline()

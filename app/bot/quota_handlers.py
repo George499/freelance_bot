@@ -252,7 +252,7 @@ async def cb_bot_pause(callback: CallbackQuery):
         )
     except TelegramBadRequest:
         pass
-    await callback.answer("⏸ На паузе. Kwork-цикл не запускается.", show_alert=False)
+    await _safe_answer(callback, "⏸ На паузе. Kwork-цикл не запускается.", show_alert=False)
 
 
 @quota_router.callback_query(F.data == "bot_resume")
@@ -265,12 +265,25 @@ async def cb_bot_resume(callback: CallbackQuery):
         )
     except TelegramBadRequest:
         pass
-    await callback.answer("▶️ Активен. Следующий цикл — в ближайшие 10 мин.", show_alert=False)
+    await _safe_answer(callback, "▶️ Активен. Следующий цикл — в ближайшие 10 мин.", show_alert=False)
 
 
 def _kwork_id_from_url(url: str) -> str | None:
     m = re.search(r"/projects/(\d+)", url or "")
     return m.group(1) if m else None
+
+
+async def _safe_answer(callback: CallbackQuery, text: str = "", show_alert: bool = False) -> None:
+    """Волна 5.1 (баг-фикс): callback.answer не должен ронять хендлер.
+
+    Через CF-прокси апдейты доходят с задержкой → query успевает устареть
+    ("query is too old"). Раньше это падало ПЕРВОЙ строкой и срывало всю
+    перепроверку. Теперь глотаем — работа (edit карточки) выполнится всё равно.
+    """
+    try:
+        await callback.answer(text, show_alert=show_alert)
+    except TelegramBadRequest:
+        pass
 
 
 @quota_router.callback_query(F.data.startswith("kw_recheck:"))
@@ -279,15 +292,15 @@ async def cb_kwork_recheck(callback: CallbackQuery, config: Settings):
     internal_id = callback.data.split(":", 1)[1]
     project = await Project.objects().where(Project.id == int(internal_id)).first()
     if not project:
-        await callback.answer("Заказ не найден в базе", show_alert=True)
+        await _safe_answer(callback, "Заказ не найден в базе", show_alert=True)
         return
 
     kw_id = _kwork_id_from_url(project.url)
     if not kw_id:
-        await callback.answer("Не удалось определить ID заказа", show_alert=True)
+        await _safe_answer(callback, "Не удалось определить ID заказа", show_alert=True)
         return
 
-    await callback.answer("Проверяю актуальные отклики…", show_alert=False)
+    await _safe_answer(callback, "Проверяю актуальные отклики…", show_alert=False)
     try:
         kwork = Kwork(
             login=config.kw_login,
@@ -303,11 +316,11 @@ async def cb_kwork_recheck(callback: CallbackQuery, config: Settings):
         current_offers = int(data.get("offers", 0)) if data else None
     except Exception as exc:
         logger.warning("Recheck error [%s]: %s", kw_id, exc)
-        await callback.answer("⚠️ Не удалось перепроверить (ошибка Kwork API).", show_alert=True)
+        await _safe_answer(callback, "⚠️ Не удалось перепроверить (ошибка Kwork API).", show_alert=True)
         return
 
     if current_offers is None:
-        await callback.answer("⚠️ Заказ недоступен (возможно снят).", show_alert=True)
+        await _safe_answer(callback, "⚠️ Заказ недоступен (возможно снят).", show_alert=True)
         return
 
     n0 = int(project.offers_at_first or 0)
@@ -340,7 +353,7 @@ async def cb_kwork_recheck(callback: CallbackQuery, config: Settings):
         )
     except Exception as exc:
         logger.info("Recheck edit failed [%s]: %s", kw_id, exc)
-        await callback.answer(dyn_line, show_alert=True)
+        await _safe_answer(callback, dyn_line, show_alert=True)
 
 
 @quota_router.callback_query(F.data.startswith("kw_genoffer:"))
@@ -349,13 +362,13 @@ async def cb_kwork_genoffer(callback: CallbackQuery, config: Settings):
     internal_id = callback.data.split(":", 1)[1]
     project = await Project.objects().where(Project.id == int(internal_id)).first()
     if not project:
-        await callback.answer("Заказ не найден в базе", show_alert=True)
+        await _safe_answer(callback, "Заказ не найден в базе", show_alert=True)
         return
     if not config.anthropic_api_key:
-        await callback.answer("ANTHROPIC_API_KEY не задан", show_alert=True)
+        await _safe_answer(callback, "ANTHROPIC_API_KEY не задан", show_alert=True)
         return
 
-    await callback.answer("Генерирую черновик…", show_alert=False)
+    await _safe_answer(callback, "Генерирую черновик…", show_alert=False)
 
     price = int(project.kwork_price or 0)
     category = categorize_by_budget(price, price)
@@ -397,7 +410,8 @@ async def cb_kwork_sent(callback: CallbackQuery):
     except TelegramBadRequest:
         pass  # Сообщение может быть старым
 
-    await callback.answer(
+    await _safe_answer(
+        callback,
         f"✅ Отклик учтён. Осталось {remaining}/{MONTHLY_QUOTA}",
         show_alert=False,
     )
@@ -412,5 +426,5 @@ async def cb_kwork_skip(callback: CallbackQuery):
         await callback.message.edit_reply_markup(reply_markup=None)
     except TelegramBadRequest:
         pass
-    await callback.answer("Пропущено", show_alert=False)
+    await _safe_answer(callback, "Пропущено", show_alert=False)
     logger.info("Project %s skipped", project_id)
