@@ -729,9 +729,39 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             no_code_required=score_result.get("no_code_required"),
         )
 
+        # === Волна 30.06 A1: velocity-гейт по абсолюту (флипает вердикт) ===
+        # Заголовок GO не должен стоять над "мясорубкой". Абсолют откликов на
+        # момент показа = размер очереди куда заходишь.
+        #  - FAST: абсолют >= 20 → SKIP (заказы взаимозаменяемы, забитая очередь =
+        #    мёртвый коннект);
+        #  - BIG/DUAL: абсолют >= 25 → флип в QUALI ("очередь забита, нужен козырь").
+        _cat = score_result.get("category")
+        if _cat == "FAST" and offers_count >= 20:
+            stats["low_score_silenced"] += 1
+            logger.info(
+                "VelocityGateSkip [FAST %s]: %d откликов ≥20 — очередь забита, SKIP",
+                title[:60], offers_count,
+            )
+            await asyncio.sleep(random.choice([1, 2, 3]))
+            continue
+        velocity_quali = False
+        if _cat in ("BIG", "DUAL") and offers_count >= 25 and respond:
+            respond = False
+            velocity_quali = True
+            decision_reason = (
+                f"velocity-гейт: очередь забита ({offers_count} откликов), "
+                f"нужен козырь против массы — QUALI, не GO"
+            )
+            logger.info(
+                "VelocityGateQuali [BIG %s]: %d откликов ≥25 — флип GO→QUALI",
+                title[:60], offers_count,
+            )
+
         # Волна 3 идея 48 (доп. модификатор): при 30-50 откликах присылаем
         # ТОЛЬКО рекомендации (respond=True), пограничные глушим.
-        if not respond and 30 <= offers_count < 50:
+        # Исключение: velocity-QUALI (BIG с забитой очередью) — показываем с
+        # пометкой, не глушим (BIG терпит очередь чуть больше, Selected Proposals).
+        if not respond and not velocity_quali and 30 <= offers_count < 50:
             stats["low_score_silenced"] += 1
             logger.info(
                 "MidCompetitionBorderlineSkip [%s]: %d откликов — пограничный глушим",

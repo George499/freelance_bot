@@ -1319,6 +1319,44 @@ def detect_pixel_perfect(title: str, description: str) -> Optional[str]:
     return None
 
 
+# === Волна 30.06 A3: копирование конкретного сайта / сайт-донор ===
+_SITE_DONOR_RE = re.compile(
+    r"сайт[\s\-]?донор|"
+    r"\bдонор\w*\b[\s\S]{0,40}?(сайт|структур|контент)|(сайт|структур|контент)[\s\S]{0,40}?\bдонор\w*\b|"
+    r"копи\w+\s+сайт|скопир\w+\s+сайт|копирован\w+\s+сайт|"
+    r"структур\w+\s+и\s+контент\s+бер[её]тся\s+с|"
+    r"по\s+образц\w+\s+сайт|переносим\s+(контент\s+)?с\s+сайт|"
+    r"перенести\s+(весь\s+)?(контент|структур)\s+с\s+сайт|"
+    r"сделать\s+как\s+на\s+сайте\s+https?://",
+    re.IGNORECASE,
+)
+# Исключение: "аналог X" / "упрощённый аналог" — разработка похожего с нуля, НЕ копия.
+_ANALOG_NOT_COPY_RE = re.compile(
+    r"аналог\s+(jira|trello|notion|asana|\w+)|упрощённ\w+\s+аналог|"
+    r"похож\w+\s+(по\s+смыслу|функционал)|свой\s+аналог|с\s+нуля\s+похож",
+    re.IGNORECASE,
+)
+
+
+def detect_site_donor(title: str, description: str) -> Optional[str]:
+    """Волна 30.06 A3: копирование КОНКРЕТНОГО сайта (контент/структура) → reject.
+
+    По видимому тексту описания, не дожидаясь вложения. НЕ триггерит на
+    "аналог Jira/Trello" (разработка похожего с нуля).
+    """
+    text = f"{title}\n{description}"
+    m = _SITE_DONOR_RE.search(text)
+    if not m:
+        return None
+    # "аналог X" без явного донора/копирования — это не копирование сайта.
+    if _ANALOG_NOT_COPY_RE.search(text) and not re.search(
+        r"сайт[\s\-]?донор|копирован\w+\s+сайт|структур\w+\s+и\s+контент\s+бер",
+        text, re.IGNORECASE,
+    ):
+        return None
+    return f"копирование сайта / сайт-донор ('{m.group(0)[:40].strip()}') — hard reject"
+
+
 def detect_game_botting(title: str, description: str) -> Optional[str]:
     """Волна 4 п.1.4: game botting → hard reject (против EULA, RMT-риск)."""
     text = f"{title}\n{description}"
@@ -1500,6 +1538,8 @@ def detect_infra_transfer_microbudget(
 # === Волна 4 Группа 4.1: бонус ML/RAG прикладные ===
 
 # Прикладные ML/CV/OCR-маркеры (бонус +2)
+# Прикладной ML — зона Георгия (детекция/OCR/прогноз на готовых инструментах).
+# Волна 30.06 A2: fine-tuning/LoRA/дообучение УБРАНЫ отсюда — они ML-инженерия (ведро 2).
 APPLIED_ML_MARKERS = (
     r"\byolo\b|yolov\d+",
     r"компьютерн\w+\s+зрени|\bcomputer\s+vision\b|\bcv\b\s+(модел|задач)",
@@ -1508,12 +1548,9 @@ APPLIED_ML_MARKERS = (
     r"распознав\w+\s+(текст|документ|таблиц|номер|лиц)",
     r"прогнозиров\w+\s+на\s+данных|прогноз\w+\s+(спрос|цен|временн)|"
     r"\bregression\s+model\b|forecast(ing|ed)?",
-    r"дообучен\w+\s+модел|обучен\w+\s+модел\w+\s+под",
-    r"\bfine[\s\-]?tun\w+\b|\blora\b|\bpeft\b|\bqlora\b",
     r"ml[\s\-]?модел\w+\s+под\s+задач",
     r"анализ\s+данных\s+с\s+(ml|нейросет)",
-    r"\bsklearn\b|\bxgboost\b|\bcatboost\b|\blightgbm\b|"
-    r"\btensorflow\b|\bpytorch\b|\bkeras\b",
+    r"\bsklearn\b|\bxgboost\b|\bcatboost\b|\blightgbm\b",
 )
 _APPLIED_ML_RE = re.compile("|".join(APPLIED_ML_MARKERS), re.IGNORECASE)
 
@@ -1529,13 +1566,62 @@ RESEARCH_ML_MARKERS = (
 _RESEARCH_ML_RE = re.compile("|".join(RESEARCH_ML_MARKERS), re.IGNORECASE)
 
 
-def detect_applied_ml_bonus(title: str, description: str) -> tuple[int, str]:
-    """Волна 4 п.4.1: бонус +2 за прикладной ML (YOLO/CV/OCR/fine-tuning).
+# === Волна 30.06 A2: ведро 2 — ML-инженерия и self-host инференс (НЕ зона Георгия) ===
+# Обучение/дообучение LLM, self-host инференс, диффузия для генерации картинок.
+# Продакшн-кейсов нет. core requirement → дисквалификатор (SKIP), вскользь → -2.
+ML_ENGINEERING_MARKERS = (
+    r"\bfine[\s\-]?tun\w+|\bfine[\s\-]?тюн\w+|дообучен\w+\s+(модел|llm|нейросет)",
+    r"\blora\b|\bqlora\b|\bpeft\b",
+    r"обучен\w+\s+(модел|llm|нейросет)\w*\s+(с\s+нул|на\s+свои|под\s+клиент)|обучить\s+(модел|llm)",
+    r"\bvllm\b|\btgi\b|text[\s\-]?generation[\s\-]?inference",
+    r"\btensorrt\b|\btriton\s+inference|gpu[\s\-]?инференс|инференс\s+на\s+gpu",
+    r"квантизац\w+|\bgguf\b|\bawq\b|\bgptq\b|\bbitsandbytes\b",
+    r"self[\s\-]?host\w*\s+(llm|модел|инференс)|локальн\w+\s+(llm|инференс\s+модел)|развернуть\s+(llm|llama|mistral|qwen)\s+на\s+сво",
+    r"hugging\s*face[\s\S]{0,40}?(обуч|дообуч|train|fine)",
+    r"\bflux\.?1?\b|\bstable\s+diffusion\b|\bsdxl\b|\bcomfyui\b|\bcontrolnet\b|"
+    r"\bautomatic1111\b|\ba1111\b",
+    r"генерац\w+\s+(лиц|аватар|селфи|портрет)\w*\s+через\s+(sd|stable|нейросет|диффуз)",
+    r"диффузи\w+\s+модел|обучить\s+lora\s+(на|для)\s+(картин|лиц|стил|фото)",
+)
+_ML_ENGINEERING_RE = re.compile("|".join(ML_ENGINEERING_MARKERS), re.IGNORECASE)
 
-    НЕ давать бонус если research/PhD-маркеры.
+# Маркеры "вскользь" — маркер ведра 2 в скобках как альтернатива, не core.
+_ML_ENG_INCIDENTAL_RE = re.compile(
+    r"\((или\s+)?(можно\s+)?(дообуч|fine[\s\-]?tun|обуч)\w*[^)]{0,40}\)|"
+    r"как\s+альтернатив\w+\s+(можно\s+)?дообуч|"
+    r"опционально\s+(можно\s+)?дообуч",
+    re.IGNORECASE,
+)
+
+
+def detect_ml_engineering(title: str, description: str) -> tuple[str, str]:
+    """Волна 30.06 A2: ML-инженерия / self-host инференс / диффузия — вне зоны.
+
+    Returns:
+        ("hard_reject", reason) — core requirement (обычное совпадение);
+        ("penalty", reason) — маркер вскользь (в скобках "или дообучить") → -2;
+        ("", "") — нет маркеров ведра 2.
     """
     text = f"{title}\n{description}"
-    if _RESEARCH_ML_RE.search(text):
+    m = _ML_ENGINEERING_RE.search(text)
+    if not m:
+        return "", ""
+    if _ML_ENG_INCIDENTAL_RE.search(text):
+        return "penalty", f"ML-инженерия вскользь ('{m.group(0)[:30]}'): -2"
+    return "hard_reject", (
+        f"ML-инженерия / self-host инференс / диффузия ('{m.group(0)[:30]}') — "
+        f"вне зоны, обучение и self-host моделей без production-кейсов"
+    )
+
+
+def detect_applied_ml_bonus(title: str, description: str) -> tuple[int, str]:
+    """Волна 4 п.4.1: бонус +2 за прикладной ML (YOLO/CV/OCR/прогноз).
+
+    НЕ давать бонус если research/PhD-маркеры ИЛИ маркеры ведра 2 (ML-инженерия) —
+    те обрабатываются раньше как дисквалификатор (A2).
+    """
+    text = f"{title}\n{description}"
+    if _RESEARCH_ML_RE.search(text) or _ML_ENGINEERING_RE.search(text):
         return 0, ""
     m = _APPLIED_ML_RE.search(text)
     if m:
@@ -2457,11 +2543,11 @@ def compute_competition_modifier(
     modifier = 0
     reasons: list[str] = []
 
-    # Отклики — волна 3 идея 48 банды
-    if responses_count <= 10:
-        modifier += 1
-        reasons.append(f"низкая конкуренция ({responses_count} откликов): +1")
-    elif responses_count <= 30:
+    # Отклики. Волна 30.06 B2-guard: НЕ давать +1 за низкий абсолют — в момент
+    # показа откликов почти всегда 0-1, это НЕ "низкая конкуренция", а отсутствие
+    # данных о темпе (может быть начало мясорубки). Бонус за реально медленный
+    # темп начисляется отдельно на автозамере (velocity), не по первому абсолюту.
+    if responses_count <= 30:
         pass
     elif responses_count <= 50:
         modifier -= 2
@@ -2646,17 +2732,35 @@ _STREAMING_RE = re.compile(
     r"\bмедиасервер\w*|\bmediasoup\b|\bjanus\b|ant[\s-]?media|\bkurento\b",
     re.IGNORECASE,
 )
+# Волна 30.06 A4: маркеры локальной автоматизации / готового SDK — НЕ построение
+# инфраструктуры. Подавляют штраф (управление готовым софтом, не медиасервер).
+_STREAMING_LOCAL_RE = re.compile(
+    r"\bobs\b|obs[\s\-]?websocket|obs[\s\-]?studio|"
+    r"\bлокальн\w*|\bдесктоп\w*|windows[\s\-]?приложен|"
+    r"управлени\w+\s+(obs|софт|програм|приложен)|запуск\s+(obs|софт|програм)|"
+    r"\bdaily\.co\b|\bagora\b|\bvonage\b|\btwilio\s+video\b|"
+    r"готов\w+\s+(видео[\s\-]?)?sdk|интеграц\w+\s+(готов\w+\s+)?видео[\s\-]?sdk",
+    re.IGNORECASE,
+)
 
 
 def detect_streaming_low_budget(
     title: str, description: str, budget_limit: int
 ) -> tuple[int, str]:
-    """v3 3.4: real-time стриминг при бюджете < 150к."""
+    """v3 3.4 + волна 30.06 A4: штраф ТОЛЬКО за построение медиа-инфраструктуры.
+
+    Подавляется если рядом маркеры локальной автоматизации (OBS/десктоп/управление
+    готовым софтом) или интеграции готового видео-SDK (Daily.co/Agora) — это не
+    построение стриминг-инфраструктуры, а утилита/интеграция.
+    """
     if not budget_limit or budget_limit >= 150_000:
         return 0, ""
-    match = _STREAMING_RE.search(f"{title}\n{description}")
+    text = f"{title}\n{description}"
+    match = _STREAMING_RE.search(text)
     if not match:
         return 0, ""
+    if _STREAMING_LOCAL_RE.search(text):
+        return 0, ""  # OBS/локальное/готовый SDK — не инфраструктура
     return -3, (
         f"real-time стриминг ('{match.group(0)}') при бюджете {budget_limit:,} ₽ "
         f"< 150 000 ₽ — инфраструктура от 200к"
@@ -3447,6 +3551,20 @@ async def score_project(
             "breakdown": {},
         }
 
+    # === Волна 30.06 A2: ML-инженерия / self-host инференс / диффузия ===
+    # Core requirement (обучение LLM, vLLM, FLUX/SD) → дисквалификатор. Вскользь
+    # ("или можно дообучить") → -2 после Haiku (применяется ниже, ml_eng_penalty).
+    ml_eng_action, ml_eng_reason = detect_ml_engineering(title, description)
+    if ml_eng_action == "hard_reject":
+        logger.info("MLEngineeringHardReject [%s]: %s", title[:60], ml_eng_reason)
+        return {
+            "score": 0, "is_ai": is_ai, "reason": ml_eng_reason,
+            "hard_reject": True, "scope_unclear": False, "no_code_required": None,
+            "site_category": "not_site",
+            "hire_rate_penalty": False, "hired_percent": hired_percent,
+            "breakdown": {},
+        }
+
     # === Волна 4-5 Группа 1: HARD REJECT (серая зона / ToS / юр.риски / мусор) ===
     for fn, label in (
         (detect_marketplace_work, "MarketplaceHardReject"),
@@ -3458,6 +3576,7 @@ async def score_project(
         (detect_serp_parsing, "SerpParsingHardReject"),             # волна 5 (1.4)
         (detect_template_placeholders, "TemplatePlaceholderSkip"),  # волна 5 (1.5)
         (detect_pixel_perfect, "PixelPerfectSkip"),                 # волна 5 (1.5)
+        (detect_site_donor, "SiteDonorHardReject"),                 # волна 30.06 A3
     ):
         hr_reason = fn(title, description)
         if hr_reason:
@@ -3833,6 +3952,17 @@ async def score_project(
             logger.info(
                 "AppliedML [%s]: %d→%d — %s",
                 title[:60], old_score, score, ml_reason,
+            )
+
+        # === Волна 30.06 A2: ML-инженерия вскользь ("или дообучить") -2 ===
+        # (core requirement уже отбит как hard reject до Haiku).
+        if ml_eng_action == "penalty":
+            old_score = score
+            score = max(0, score - 2)
+            reason = f"{reason}; {ml_eng_reason}" if reason else ml_eng_reason
+            logger.info(
+                "MLEngineeringPenalty [%s]: %d→%d — %s",
+                title[:60], old_score, score, ml_eng_reason,
             )
 
         # === Волна 4 п.2.1: фильтр заказчика против новичков -5 ===
