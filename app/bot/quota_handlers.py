@@ -337,11 +337,13 @@ async def cb_kwork_recheck(callback: CallbackQuery, config: Settings):
     # Та же формула, что и в авто-замерах — чтобы вердикты не расходились.
     _verdict, speed_note = classify_offer_dynamics(n0, current_offers, elapsed_min or 0)
 
-    # Волна 5.1 (1.6/1.1-bis): редактируем САМУ карточку (callback.message), а не
-    # шлём новое сообщение. Дописываем строку динамики, сохраняем кнопки и ссылку.
+    # Волна 5.1 (1.6/1.1-bis): редактируем САМУ карточку (callback.message).
+    # Метка времени замера делает контент уникальным — иначе Telegram отклоняет
+    # edit с "message is not modified" когда отклики не изменились.
     elapsed_txt = f"за {elapsed_min} мин" if elapsed_min else ""
+    stamp = datetime.now().strftime("%H:%M")
     dyn_line = (
-        f"🔄 Отклики: было {n0} → стало {current_offers} (+{delta}) {elapsed_txt}\n"
+        f"🔄 [{stamp}] Отклики: было {n0} → стало {current_offers} (+{delta}) {elapsed_txt}\n"
         f"{speed_note}"
     )
     try:
@@ -352,8 +354,14 @@ async def cb_kwork_recheck(callback: CallbackQuery, config: Settings):
             reply_markup=callback.message.reply_markup,
         )
     except Exception as exc:
-        logger.info("Recheck edit failed [%s]: %s", kw_id, exc)
-        await _safe_answer(callback, dyn_line, show_alert=True)
+        # edit не прошёл (not modified / текст переполнен / прочее) — шлём
+        # результат отдельным сообщением-ответом, чтобы George гарантированно
+        # увидел перепроверку (alert ненадёжен: query устаревает через прокси).
+        logger.info("Recheck edit failed [%s]: %s — шлю сообщением", kw_id, exc)
+        try:
+            await callback.message.answer(dyn_line)
+        except Exception as exc2:
+            logger.warning("Recheck answer also failed [%s]: %s", kw_id, exc2)
 
 
 @quota_router.callback_query(F.data.startswith("kw_genoffer:"))
