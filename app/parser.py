@@ -18,6 +18,7 @@ from app.pause_mode import is_bot_paused
 from app.kwork_filter import (
     MONTHLY_QUOTA,
     RECHECK_SCHEDULE_MIN,
+    categorize_by_budget,
     classify_offer_dynamics,
     generate_offer_claude,
     next_recheck_delay_min,
@@ -220,6 +221,16 @@ def _format_kwork_message(
     if unknowns:
         unknowns_block = "❓ Неизвестные: " + html.quote("; ".join(unknowns)) + "\n\n"
 
+    # Волна 30.06 B2: низкий абсолют откликов в момент показа = НЕТ данных о
+    # конкуренции (не "мало откликов = наш"). Темп ещё не замерен. Помечаем, что
+    # решение по конкуренции принимать нельзя, очередь проверить по ссылке.
+    velocity_block = ""
+    if offers_count <= 5:
+        velocity_block = (
+            "🚫 Данных о конкуренции пока нет (темп не замерен) — "
+            "проверь очередь по ссылке перед откликом.\n\n"
+        )
+
     # v4 раздел 9: подвал для BIG/DUAL когда farm-mode активен
     farm_footer = ""
     if farm_mode_active and category in ("BIG", "DUAL"):
@@ -234,6 +245,7 @@ def _format_kwork_message(
         f"💰 {budget_str}\n"
         f"{preview}\n\n"
         f"{unknowns_block}"
+        f"{velocity_block}"
         f"Решение: {html.quote(decision_reason)}\n"
         f"Причина скора: {html.quote(score_reason)}\n\n"
         f"📊 Квота: {quota['remaining']}/{MONTHLY_QUOTA} осталось, "
@@ -446,6 +458,15 @@ async def _process_pending_rechecks(bot: Bot, config: Settings, kwork, token) ->
         proj.offers_rechecked = current
         proj.recheck_done = stage
 
+        # Волна 30.06 B1+A1: гейт по АБСОЛЮТУ на замере, не только по темпу.
+        # Очередь забилась к моменту замера → флип в мясорубку по порогам A1
+        # (FAST≥20 / BIG≥25), даже если темп формально не "fast".
+        _cat = categorize_by_budget(int(proj.kwork_price or 0), int(proj.kwork_price or 0))
+        abs_gate = (current >= 20) if _cat == "FAST" else (current >= 25)
+        if abs_gate and verdict != "fast":
+            verdict = "fast"
+            note = f"очередь забита ({current} откликов на {elapsed_min} мин)"
+
         # Планируем следующий замер или завершаем.
         delay = next_recheck_delay_min(stage)
         is_final = delay is None
@@ -459,9 +480,8 @@ async def _process_pending_rechecks(bot: Bot, config: Settings, kwork, token) ->
         await proj.save()
 
         # Обновляем карточку через edit (1.6) только при значимом сигнале:
-        #  - быстрый рост (мясорубка) → сворачиваем карточку (collapse);
-        #  - финальный замер с медленным ростом (узкий, актуален) → дописываем
-        #    строку динамики в карточку.
+        #  - мясорубка (быстрый темп ИЛИ забитая очередь) → сворачиваем (collapse);
+        #  - финальный замер с медленным ростом (узкий, актуален) → дописываем.
         if verdict == "fast":
             await _recheck_edit_card(
                 bot, config, proj,

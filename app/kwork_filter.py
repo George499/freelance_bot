@@ -1884,6 +1884,38 @@ def detect_always_hard_reject(title: str, description: str) -> Optional[str]:
     return match.group(0) if match else None
 
 
+# === Волна 30.06 C1: связка CRM-платформа + no-code обвязка → hard reject ===
+_CRM_PLATFORM_RE = re.compile(
+    r"\bamocrm\b|\bамосрм\b|\bamo\s*crm\b|\bамо\b|"
+    r"\bbitrix\s*24\b|\bбитрикс\s*24\b",
+    re.IGNORECASE,
+)
+_NOCODE_BUNDLE_RE = re.compile(
+    r"\bsalebot\b|\bсейлбот\b|\bwazzup\b|\bваззап\b|\bwappi\b|"
+    r"\bmanychat\b|\bменичат\b|\btextback\b|\bsendpulse\s+бот|"
+    r"\bpipedrive\b|\bkommo\b",
+    re.IGNORECASE,
+)
+
+
+def detect_crm_nocode_bundle(title: str, description: str) -> Optional[str]:
+    """Волна 30.06 C1: amoCRM/Bitrix24 + no-code (SaleBot/Wazzup/Wappi/ManyChat)
+    как основа → hard reject, даже если в стеке упомянут Claude/OpenAI API.
+
+    Ядро такой работы — кастомизация CRM и связка no-code платформ, не разработка.
+    Маркер "Claude API" не превращает это в разработческую задачу.
+    """
+    text = f"{title}\n{description}"
+    if _CRM_PLATFORM_RE.search(text) and _NOCODE_BUNDLE_RE.search(text):
+        crm = _CRM_PLATFORM_RE.search(text).group(0)
+        nocode = _NOCODE_BUNDLE_RE.search(text).group(0)
+        return (
+            f"CRM-обвязка ({crm} + {nocode}) — no-code кастомизация, не разработка "
+            f"(Claude API в стеке не спасает)"
+        )
+    return None
+
+
 def detect_landing_reject(title: str, description: str, budget_limit: int) -> Optional[str]:
     """
     P1.1 + P2.2: hard-reject лендингов / одностраничников.
@@ -3353,6 +3385,12 @@ OFFER_PROMPT_CLAUDE = """Ты пишешь отклик на Kwork от лица
 17. НЕ просить доступы / ТЗ / репозиторий пока заказчик не выбрал. Не забегать
     вперёд. Не повторять то что уже могло быть в диалоге.
 
+18. ДОРАБОТКА ЧУЖОГО КОДА (класс D, "починить/доработать" без видимого кода).
+    Если это доработка существующего проекта и репозитория/доступа ещё нет —
+    в отклике ОДНОЙ фразой обозначить границу: "оценка финальная после того как
+    увижу репозиторий/код". Это защита от расползания скоупа. Без давления,
+    спокойно, как норма процесса.
+
 ВЫБОР ФОРМАТА.
 
 Структурный (для технически грамотных клиентов с детальным ТЗ - описание заказа > 500 символов И есть тех. детали типа стека / API / интеграций):
@@ -3577,6 +3615,7 @@ async def score_project(
         (detect_template_placeholders, "TemplatePlaceholderSkip"),  # волна 5 (1.5)
         (detect_pixel_perfect, "PixelPerfectSkip"),                 # волна 5 (1.5)
         (detect_site_donor, "SiteDonorHardReject"),                 # волна 30.06 A3
+        (detect_crm_nocode_bundle, "CrmNocodeBundleHardReject"),    # волна 30.06 C1
     ):
         hr_reason = fn(title, description)
         if hr_reason:
