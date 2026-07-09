@@ -20,12 +20,17 @@ import sqlite3
 import sys
 
 from app.kwork_filter import (
+    classify_offer_dynamics,
     compute_competition_modifier,
+    detect_always_hard_reject,
     detect_b2c_service_site,
     detect_class_d_blind_fix,
     detect_microbudget_multicomponent,
+    detect_no_code_required,
     detect_profile_mismatch,
+    detect_reviews_census,
     detect_terminology_specificity,
+    detect_vibecoding_devaluation,
     score_project,
 )
 
@@ -295,7 +300,137 @@ def run_wave3_cases() -> int:
     return fails
 
 
+def run_july_cases() -> int:
+    """Детерминированные тесты правок июля 2026 (6 групп) — без Anthropic.
+
+    Каждый детектор проверяется изолированно, включая ложно-положительные
+    контроли (легитимная капча, адекватный бюджет, отзыв-фарм).
+    """
+    print("=" * 80)
+    print("Июль 2026 — детерминированные кейсы правок (без обращений к Anthropic)")
+    print("=" * 80)
+    fails = 0
+
+    # --- Группа 1: капча-решалки + уникализаторы → always hard-reject ---
+    print("\n[Г1.1] Решалка капчи → hard-reject")
+    if not _check("hard-reject", True, detect_always_hard_reject(
+        "Решалка капчи", "Нужна решалка капчи для парсера, обходить Turnstile",
+    ) is not None):
+        fails += 1
+
+    print("\n[Г1.2] Обход hCaptcha → hard-reject")
+    if not _check("hard-reject", True, detect_always_hard_reject(
+        "Автоматизация", "Нужно обойти hCaptcha на входе",
+    ) is not None):
+        fails += 1
+
+    print("\n[Г1.3] Уникализатор видео → hard-reject")
+    if not _check("hard-reject", True, detect_always_hard_reject(
+        "Уникализатор", "Уникализатор видео для массовой заливки в TikTok",
+    ) is not None):
+        fails += 1
+
+    print("\n[Г1.4] Легитимная капча (интеграция формы) → НЕ hard-reject")
+    if not _check("no reject", None, detect_always_hard_reject(
+        "Форма на сайте", "На сайте стоит капча, интегрируйте форму обратной связи",
+    )):
+        fails += 1
+
+    # --- Группа 5: no-code Make как ядро связки ---
+    print("\n[Г5.1] Beds24 → Make → SendPulse → no-code hard-reject")
+    if not _check("no-code", True, detect_no_code_required(
+        "Синхронизация", "Настроить связку Beds24 → Make → SendPulse для брони",
+    ) is not None):
+        fails += 1
+
+    print("\n[Г5.2] Код без no-code → НЕ no-code")
+    if not _check("no no-code", None, detect_no_code_required(
+        "Телеграм бот", "Бот на aiogram с PostgreSQL и вебхуками",
+    )):
+        fails += 1
+
+    print("\n[Г5.3] Миграция С Make НА код → НЕ hard-reject (edge)")
+    if not _check("migration pass", None, detect_no_code_required(
+        "Переписать с Make", "Сейчас всё на Make.com, переписать заново на Node",
+    )):
+        fails += 1
+
+    # --- Группа 4: мясорубка по абсолюту vs кучный всплеск ---
+    print("\n[Г4.1] Всплеск 8 откликов за 10 мин → fresh (не мясорубка)")
+    v, note = classify_offer_dynamics(0, 8, 10)
+    if not _check("verdict", "fresh", v):
+        fails += 1
+    print(f"       note: {note}")
+
+    print("\n[Г4.2] 32 отклика (абсолют ≥30) → fast (мясорубка)")
+    v, _note = classify_offer_dynamics(0, 32, 300)
+    if not _check("verdict", "fast", v):
+        fails += 1
+
+    print("\n[Г4.3] Высокий темп + абсолют ≥15 → fast (мясорубка)")
+    v, _note = classify_offer_dynamics(0, 20, 10)
+    if not _check("verdict", "fast", v):
+        fails += 1
+
+    print("\n[Г4.4] Медленный темп, <15 откликов → slow (узкая ниша)")
+    v, _note = classify_offer_dynamics(5, 8, 60)
+    if not _check("verdict", "slow", v):
+        fails += 1
+
+    # --- Группа 2: вайбкодинг + заниженный бюджет ---
+    print("\n[Г2.1] Вайбкодинг + 10 000 ₽ → -4")
+    mod, reason = detect_vibecoding_devaluation(
+        "Бот на вайбкодинге", "Склепал в курсоре, нужно допилить", 10000,
+    )
+    if not _check("modifier", -4, mod):
+        fails += 1
+    print(f"       reason: {reason}")
+
+    print("\n[Г2.2] Вайбкодинг + 60 000 ₽ (адекватно) → 0")
+    mod, _r = detect_vibecoding_devaluation(
+        "Бот на вайбкодинге", "Допилить проект", 60000,
+    )
+    if not _check("modifier", 0, mod):
+        fails += 1
+
+    print("\n[Г2.3] Без вайбкодинга → 0")
+    mod, _r = detect_vibecoding_devaluation(
+        "Телеграм бот", "Обычный бот на aiogram", 10000,
+    )
+    if not _check("modifier", 0, mod):
+        fails += 1
+
+    # --- Группа 3: ценз заказчика по отзывам (профиль = 3) ---
+    print("\n[Г3.1] «от 10 отзывов», профиль 3 → hard-reject")
+    if not _check("census", True, detect_reviews_census(
+        "Разработка", "Требуется исполнитель от 10 отзывов", 3,
+    ) is not None):
+        fails += 1
+
+    print("\n[Г3.2] «от 3 отзывов», профиль 3 → проходим (None)")
+    if not _check("census pass", None, detect_reviews_census(
+        "Разработка", "Нужен исполнитель от 3 отзывов", 3,
+    )):
+        fails += 1
+
+    print("\n[Г3.3] Отзыв-фарм «соберу 500 отзывов» → НЕ ценз (None)")
+    if not _check("not census", None, detect_reviews_census(
+        "Парсер", "Соберу 500 отзывов для клиента с сайта", 3,
+    )):
+        fails += 1
+
+    print("\n" + "=" * 80)
+    if fails == 0:
+        print("Все кейсы июля прошли ✓")
+    else:
+        print(f"Провалов: {fails}")
+    print("=" * 80)
+    return fails
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--july":
+        sys.exit(run_july_cases())
     if len(sys.argv) > 1 and sys.argv[1] == "--wave3":
         sys.exit(run_wave3_cases())
     db_path = sys.argv[1] if len(sys.argv) > 1 else "app/db/database/projects.db"

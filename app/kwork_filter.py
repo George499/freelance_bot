@@ -108,6 +108,15 @@ NO_CODE_PLATFORM_KEYWORDS = (
     r"workflow\s+в\s+n8n",
     r"\bmake\.com\b", r"\bintegromat\b",
     r"настроить\s+(в|через)\s+make",
+    # === Правки июль 2026, Группа 5: bare "Make" как ядро связки ===
+    # Заказ Beds24 → Make → SendPulse получал скор 9: matcher ловил только
+    # 'make.com'. Ловим Make как оркестратор по контексту связки/стрелок, но НЕ
+    # голое \bmake\b (англ. "make" даёт ложняки).
+    r"\b(?:через|на|в)\s+make\b",
+    r"\bmake\b\s*[→\-–—>]\s*\w",
+    r"\w\s*[→\-–—>]\s*\bmake\b",
+    r"(?:связк\w+|цепочк\w+|интеграци\w+|сценари\w+|пайплайн|pipeline)\s+(?:\w+\s+){0,4}make\b",
+    r"\balbato\b",
     r"\bzapier\b", r"настроить\s+(в|через)\s+zapier", r"\bзапиер\b",
     r"\bbubble\.io\b", r"\bна\s+bubble\b",
     r"airtable\s+automation",
@@ -311,6 +320,25 @@ ALWAYS_HARD_REJECT_KEYWORDS = (
     r"\bai[\s-]*сотрудник",
     r"автоматизировать\s+вс[её]\s+(с\s+помощью\s+)?(ии|ai|нейросет)",
     r"полная\s+автоматизация\s+бизнеса",
+    # === Правки июль 2026, Группа 1: капча-решалки / обход антибот-защиты ===
+    # Запрещённый предмет: обход капчи/антибота как услуга. Часто подаётся как
+    # "AI/автоматизация", поэтому именно ALWAYS (бьёт даже AI-заказы), до бонусов.
+    r"решалк\w*\s+капч",
+    r"(?:обход\w*|обойти|распозна\w+|решени\w+|решать|автомат\w+\s+решени\w+)\s+капч",
+    r"капч\w*\s+(?:солвер|solver|solving|автореш)",
+    r"puzzle[\s-]*captcha",
+    r"captcha[\s-]*(?:solver|solving|bypass)",
+    r"(?:solve|bypass)[\s-]*captcha",
+    r"(?:обход\w*|обойти|решени\w+|распозна\w+)\s+(?:turnstile|hcaptcha|recaptcha|ddos[\s-]*guard|\bddg\b)",
+    r"(?:turnstile|hcaptcha|recaptcha)\s+(?:обход|обойти|решени\w+|распозна\w+|solver|solving|bypass)",
+    r"(?:обход\w*|обойти)\s+антибот",
+    # === Правки июль 2026, Группа 1: уникализаторы контента ===
+    # Обслуживают массовый залив в обход площадочных фильтров (детекция дублей,
+    # copyright/Content ID). Назначение — обход детекции.
+    r"уникализатор",
+    r"уникализ\w+\s+(?:видео|фото|контент|изображен|аудио|текст|ролик)",
+    r"(?:обход\w*|обойти)\s+(?:детекц\w+|детект\w+)\s+(?:дубл|повтор)",
+    r"(?:обход\w*|обойти)\s+(?:copyright|content[\s-]*id|авторск\w+\s+прав|защит\w+\s+авторск)",
 )
 _ALWAYS_HARD_REJECT_RE = re.compile("|".join(ALWAYS_HARD_REJECT_KEYWORDS), re.IGNORECASE)
 
@@ -1493,6 +1521,74 @@ def detect_newbie_filter(title: str, description: str) -> tuple[int, str]:
     if m:
         return -5, f"фильтр заказчика против новичков: '{m.group(0)[:50]}' — коннект впустую"
     return 0, ""
+
+
+# === Правки июль 2026, Группа 2: вайбкодинг + заниженный бюджет (-4) ===
+# Слово «вайбкодинг» само по себе нейтрально. В связке с бюджетом ниже оценочной
+# стоимости объёма (прокси — floor 30 000 ₽) это маркер клиента, который считает
+# ИИ-работу дешёвкой: высокий риск торга вниз и конфликта. Если бюджет адекватен —
+# это грамотный клиент, штрафа нет.
+VIBECODING_LOWBALL_MAX = 30000
+
+_VIBECODING_RE = re.compile(
+    r"вайб[\s-]?код\w*|vibe[\s-]?cod\w*",
+    re.IGNORECASE,
+)
+
+
+def detect_vibecoding_devaluation(
+    title: str, description: str, budget_limit: int
+) -> tuple[int, str]:
+    """Правка июль 2026 п.2: вайбкодинг + заниженный бюджет = обесценивающий клиент.
+
+    -4 если маркер «вайбкодинг/vibe coding» И бюджет < 30 000 ₽. Если бюджет
+    адекватен — это грамотный клиент, штрафа нет (0).
+    """
+    m = _VIBECODING_RE.search(f"{title}\n{description}")
+    if not m:
+        return 0, ""
+    if budget_limit and budget_limit < VIBECODING_LOWBALL_MAX:
+        return -4, (
+            f"вайбкодинг ('{m.group(0)}') + бюджет {budget_limit:,} ₽ < "
+            f"{VIBECODING_LOWBALL_MAX:,} ₽ — обесценивающий клиент, риск торга вниз"
+        )
+    return 0, ""
+
+
+# === Правки июль 2026, Группа 3: ценз заказчика по числу отзывов профиля ===
+# Заказчик требует «от N отзывов». Если N больше текущего числа отзывов на
+# профиле — отклик заведомо отсеется по формальному критерию, коннект сгорит.
+# Требует явный предлог-требование (от/минимум/…) или «N+ отзыв» / «только с N
+# отзывами», чтобы не путать с отзыв-фармом («соберу 500 отзывов»).
+_REVIEWS_CENSUS_RE = re.compile(
+    r"(?:от|более|не\s+менее|минимум|не\s+ниже)\s+(\d+)\+?\s*"
+    r"(?:положительн\w+\s+)?(?:отзыв|выполненн\w+\s+заказ|заказ\w*\s+в\s+профил)"
+    r"|(\d+)\+\s*(?:отзыв|заказ\w*\s+в\s+профил)"
+    r"|только\s+(?:с\s+)?(?:исполнител\w+\s+)?(?:от\s+)?(\d+)\+?\s*отзыв",
+    re.IGNORECASE,
+)
+
+
+def detect_reviews_census(
+    title: str, description: str, profile_reviews_count: int
+) -> Optional[str]:
+    """Правка июль 2026 п.3: заказчик требует «от N отзывов» больше, чем есть.
+
+    Возвращает причину hard-reject если требуемое число отзывов N больше числа
+    отзывов на профиле (profile_reviews_count). Иначе None. При росте профиля
+    порог сдвигается сам — значение берётся из конфига.
+    """
+    required = 0
+    for m in _REVIEWS_CENSUS_RE.finditer(f"{title}\n{description}"):
+        for g in m.groups():
+            if g:
+                required = max(required, int(g))
+    if required > profile_reviews_count:
+        return (
+            f"ценз заказчика: требуется от {required} отзывов, "
+            f"на профиле {profile_reviews_count} — не проходишь, коннект впустую"
+        )
+    return None
 
 
 # === Волна 4 Группа 2.2: перенос инфры на исполнителя при микробюджете (-6) ===
@@ -3528,7 +3624,12 @@ FAST_FARM_BLOCK = """⚡ РЕЖИМ ОТЗЫВ-ФАРМ АКТИВЕН.
 - простая приёмка без длительного тестирования
 - НЕ subjective задача (не "сделайте красиво", не "по вкусу")
 
-При совпадении 2+ из 4 признаков добавь +2 к стартовому скору и явно отметь это в reason."""
+При совпадении 2+ из 4 признаков добавь +2 к стартовому скору и явно отметь это в reason.
+
+ВАЖНО (июль 2026): бонус +2 НЕ начисляй, если предмет заказа сомнителен по сути —
+обход капчи/антибота, уникализатор контента, обход площадочных фильтров, no-code как
+ядро (n8n/Make/Zapier), серая зона. Измеримость результата НЕ оправдывает запрещённый
+предмет: сначала проверь предмет, и только для чистых задач давай бонус."""
 
 
 async def score_project(
@@ -3542,6 +3643,7 @@ async def score_project(
     buyer_achievements: int = 0,
     farm_mode_active: bool = False,
     user_projects_count: int = 0,
+    profile_reviews_count: int = 0,
 ) -> Dict:
     default_result = {
         "score": 5, "is_ai": False, "reason": "no API key",
@@ -3646,6 +3748,19 @@ async def score_project(
         logger.info("BookingAutoHardReject [%s]: %s", title[:60], booking_hr)
         return {
             "score": 0, "is_ai": is_ai, "reason": booking_hr,
+            "hard_reject": True, "scope_unclear": False, "no_code_required": None,
+            "site_category": "not_site",
+            "hire_rate_penalty": False, "hired_percent": hired_percent,
+            "breakdown": {},
+        }
+
+    # Правка июль 2026 п.3: ценз заказчика по отзывам — если требуемое N больше
+    # числа отзывов профиля, отклик отсеется формально → hard-reject, коннект бережём.
+    census_reason = detect_reviews_census(title, description, profile_reviews_count)
+    if census_reason:
+        logger.info("ReviewsCensusHardReject [%s]: %s", title[:60], census_reason)
+        return {
+            "score": 0, "is_ai": is_ai, "reason": census_reason,
             "hard_reject": True, "scope_unclear": False, "no_code_required": None,
             "site_category": "not_site",
             "hire_rate_penalty": False, "hired_percent": hired_percent,
@@ -4015,6 +4130,19 @@ async def score_project(
                 title[:60], old_score, score, nb_reason,
             )
 
+        # === Правка июль 2026 п.2: вайбкодинг + заниженный бюджет -4 ===
+        vibe_mod, vibe_reason = detect_vibecoding_devaluation(
+            title, description, budget_limit_eff,
+        )
+        if vibe_mod:
+            old_score = score
+            score = max(0, score + vibe_mod)
+            reason = f"{reason}; {vibe_reason}" if reason else vibe_reason
+            logger.info(
+                "VibecodingDevaluation [%s]: %d→%d — %s",
+                title[:60], old_score, score, vibe_reason,
+            )
+
         # === Волна 4 п.2.2: перенос инфры на исполнителя при микробюджете -6 ===
         infra_mod, infra_reason = detect_infra_transfer_microbudget(
             title, description, budget_limit_eff,
@@ -4193,7 +4321,9 @@ def next_recheck_delay_min(stage: int) -> Optional[int]:
 
 
 # Абсолютные пороги конкуренции (перебивают темп — вердикт монотонен по n1).
-HIGH_OFFERS_ABS = 40  # ≥ этого = мясорубка/скип независимо от темпа (см. память)
+# Правка июль 2026 (Группа 4): 40→30 — настоящая мясорубка по абсолюту начинается
+# с ~30 откликов; ранний кучный всплеск при <15 откликов мясорубкой НЕ считается.
+HIGH_OFFERS_ABS = 30  # ≥ этого = мясорубка/скип независимо от темпа (см. память)
 LOW_OFFERS_ABS = 15   # узкая ниша (наш кандидат) — только пока откликов меньше
 
 
@@ -4210,12 +4340,16 @@ def classify_offer_dynamics(n0: int, n1: int, elapsed_min: int) -> tuple[str, st
         elapsed_min: минут прошло с находки.
 
     Returns:
-        (verdict, note): verdict ∈ {"fast", "slow", "medium"}.
-          fast  — мясорубка: ≥40 откликов ИЛИ ≥25/час, коннект утонет.
+        (verdict, note): verdict ∈ {"fast", "slow", "medium", "fresh"}.
+          fast  — мясорубка: ≥30 откликов ИЛИ (≥25/час И ≥15 по абсолюту), коннект утонет.
+          fresh — ранний кучный всплеск: <15 откликов, но темп ≥25/час. НЕ мясорубка,
+                  а свежий заказ — перепроверить (не сворачивать карточку).
           slow  — узкая ниша: <15 откликов И темп <10/час, наш кандидат.
           medium — всё прочее.
 
-    Логика George: 30-35 откликов — уже много (скип), за час ~10 → интересно.
+    Логика George: 30 откликов — уже много (скип), за час ~10 → интересно.
+    Правка июль 2026 (Группа 4): высокий темп при малом абсолюте (кучность в
+    первые минуты) — не клеймо мясорубки, а кандидат на ручную перепроверку.
     """
     delta = max(0, n1 - n0)
     per_hour = delta / elapsed_min * 60 if elapsed_min > 0 else None
@@ -4227,6 +4361,11 @@ def classify_offer_dynamics(n0: int, n1: int, elapsed_min: int) -> tuple[str, st
             f"🌊 уже {n1} откликов{rate_txt} — мясорубка, коннект утонет"
         )
     if per_hour is not None and per_hour >= 25:
+        # Кучный ранний всплеск при малом абсолюте — не мясорубка, а свежий заказ.
+        if n1 < LOW_OFFERS_ABS:
+            return "fresh", (
+                f"🆕 {n1} откликов, ранний всплеск{rate_txt} — свежий, перепроверить"
+            )
         return "fast", (
             f"🌊 быстрый рост ({n1} откликов{rate_txt}) — мясорубка, коннект утонет"
         )

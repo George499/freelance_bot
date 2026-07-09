@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     # объявлено здесь чтобы pydantic не падал на extra.
     review_farming_mode_default: Optional[str] = None
 
+    # Правка июль 2026 (Группа 3): текущее число отзывов на профиле George.
+    # Если заказчик требует «от N отзывов» и N > этого значения — заказ
+    # hard-reject (коннект не тратим). Поднимать по мере роста профиля.
+    profile_reviews_count: int = 3
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

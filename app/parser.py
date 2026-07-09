@@ -481,14 +481,16 @@ async def _process_pending_rechecks(bot: Bot, config: Settings, kwork, token) ->
 
         # Обновляем карточку через edit (1.6) только при значимом сигнале:
         #  - мясорубка (быстрый темп ИЛИ забитая очередь) → сворачиваем (collapse);
-        #  - финальный замер с медленным ростом (узкий, актуален) → дописываем.
+        #  - финальный замер с медленным ростом (узкий, актуален) → дописываем;
+        #  - fresh (ранний всплеск при малом абсолюте, июль 2026) → НЕ сворачиваем,
+        #    дописываем «перепроверить» — кандидат на ручной просмотр.
         if verdict == "fast":
             await _recheck_edit_card(
                 bot, config, proj,
                 f"🌊 МЯСОРУБКА: {note} — коннект утонет, скип",
                 collapse=True,
             )
-        elif is_final and verdict == "slow":
+        elif is_final and verdict in ("slow", "fresh"):
             await _recheck_edit_card(bot, config, proj, f"📈 {note}")
         logger.info(
             "RecheckCycle [%s] stage=%d n0=%d→n1=%d verdict=%s",
@@ -708,6 +710,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             buyer_achievements=buyer_achievements_count,
             farm_mode_active=farm_active,
             user_projects_count=user_projects_count,
+            profile_reviews_count=config.profile_reviews_count,
         )
 
         # Hard reject — тишина, только в логи
