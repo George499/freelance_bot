@@ -681,10 +681,11 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         user_projects_count = project.get("user_projects_count", 0)
         offers_count = project.get("offers", 0) or 0
 
-        # Волна 3 идея 48 (доп. модификатор): 50+ откликов — коннект потерян,
-        # не отправляем уведомление вообще, даже если скор высокий. Исключение —
-        # большой бюджет (>=100k) + медалька покупателя + hire_rate > 50%.
-        if offers_count >= 50:
+        # Аудит 10.07 (D): гейт по абсолюту откликов при находке 50 → 8.
+        # Данные недели 3-10.07: ВСЕ карточки с n0>=8 (9/11/12/14 откликов)
+        # флипнулись в мясорубку на замерах; максимум n0 выживших узких = 4.
+        # Исключение прежнее — big fish: бюджет >=100k + сильный покупатель.
+        if offers_count >= 8:
             big_budget = price and price >= 100_000  # волна 5: по нижней границе
             strong_buyer = buyer_achievements_count >= 1 and (
                 hired_percent is not None and hired_percent > 50
@@ -692,7 +693,8 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             if not (big_budget and strong_buyer):
                 stats["low_score_silenced"] += 1
                 logger.info(
-                    "HighCompetitionSkip [%s]: %d откликов — коннект потерян, тишина",
+                    "HighCompetitionSkip [%s]: %d откликов >=8 при находке — "
+                    "мясорубка-гейт, тишина",
                     title[:60], offers_count,
                 )
                 await asyncio.sleep(random.choice([1, 2, 3]))
@@ -751,6 +753,23 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             is_ai=score_result["is_ai"],
             no_code_required=score_result.get("no_code_required"),
         )
+
+        # === Аудит 10.07 (A): узкая ниша перевешивает порог скора ===
+        # Скор 6+ при почти пустой очереди — полноценная карточка (низкая
+        # конкуренция для novice-профиля важнее порога). Переопределяем ТОЛЬКО
+        # отказ по скору ("скор X < порога") — квоту/лимит/резерв/no-code не трогаем.
+        if (
+            not respond
+            and decision_reason.startswith("скор ")
+            and score_result["score"] >= 6
+            and offers_count < 5
+        ):
+            respond = True
+            decision_reason = (
+                f"узкая ниша: скор {score_result['score']} + {offers_count} "
+                f"откл. (<5) — GO по низкой конкуренции"
+            )
+            logger.info("NarrowNicheGo [%s]: %s", title[:60], decision_reason)
 
         # === Волна 30.06 A1: velocity-гейт по абсолюту (флипает вердикт) ===
         # Заголовок GO не должен стоять над "мясорубкой". Абсолют откликов на
