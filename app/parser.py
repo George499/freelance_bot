@@ -17,6 +17,7 @@ from app.farm_mode import is_farm_mode_active
 from app.pause_mode import is_bot_paused
 from app.kwork_filter import (
     MONTHLY_QUOTA,
+    HIGH_OFFERS_ABS,
     RECHECK_SCHEDULE_MIN,
     categorize_by_budget,
     classify_offer_dynamics,
@@ -681,11 +682,15 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         user_projects_count = project.get("user_projects_count", 0)
         offers_count = project.get("offers", 0) or 0
 
-        # Аудит 10.07 (D): гейт по абсолюту откликов при находке 50 → 8.
-        # Данные недели 3-10.07: ВСЕ карточки с n0>=8 (9/11/12/14 откликов)
-        # флипнулись в мясорубку на замерах; максимум n0 выживших узких = 4.
+        # Аудит 10.07 (D, исправлено): гейт по абсолюту при находке 50 → 30,
+        # привязан к HIGH_OFFERS_ABS (Group 4: 30 = настоящая мясорубка).
+        # НЕ ниже: узкий годный заказ спокойно набирает 8-14 откликов за
+        # часы (выжившие недели «Фиды» 1→9 slow, «Ямаркет» 4→13 slow — при
+        # поздней находке n0 был бы 8-13, гейт 8 спрятал бы лучших кандидатов).
+        # Полоса до 30 обрабатывается velocity-гейтом (FAST>=20 / BIG>=25)
+        # и fresh/flip на перепроверках — два порога по договорённости Group 4.
         # Исключение прежнее — big fish: бюджет >=100k + сильный покупатель.
-        if offers_count >= 8:
+        if offers_count >= HIGH_OFFERS_ABS:
             big_budget = price and price >= 100_000  # волна 5: по нижней границе
             strong_buyer = buyer_achievements_count >= 1 and (
                 hired_percent is not None and hired_percent > 50
@@ -693,9 +698,9 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             if not (big_budget and strong_buyer):
                 stats["low_score_silenced"] += 1
                 logger.info(
-                    "HighCompetitionSkip [%s]: %d откликов >=8 при находке — "
-                    "мясорубка-гейт, тишина",
-                    title[:60], offers_count,
+                    "HighCompetitionSkip [%s]: %d откликов >=%d при находке — "
+                    "мясорубка по абсолюту, тишина",
+                    title[:60], offers_count, HIGH_OFFERS_ABS,
                 )
                 await asyncio.sleep(random.choice([1, 2, 3]))
                 continue
