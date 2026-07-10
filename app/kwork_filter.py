@@ -571,6 +571,12 @@ AUTHORSHIP_MARKERS = (
     r"\bGSAP\b|\bframer[\s-]?motion\b|\bthree\.?js\b|\blottie\b",
     r"анимированн",
     r"интерактивн\w+\s+эффект",
+    # Аудит 10.07: клиент явно отстраивается от шаблонов/конструкторов или
+    # задаёт планку топ-SaaS — ищет кодовый авторский лендинг (наша зона).
+    r"не\s+(?:нужен\s+)?(?:шаблонн\w+|конструкторн\w+)",
+    r"а\s+не\s+конструкторн\w+",
+    r"\bpremium\b|премиальн\w+",
+    r"уровня\s+(?:linear|notion|stripe|framer|vercel|figma|apple)",
 )
 _AUTHORSHIP_RE = re.compile("|".join(AUTHORSHIP_MARKERS), re.IGNORECASE)
 
@@ -1949,9 +1955,26 @@ def _has_ai_priority(title: str, description: str) -> bool:
     return bool(_AI_PRIORITY_RE.search(f"{title}\n{description}"))
 
 
+# Аудит 10.07: ложное срабатывание на отрицании — «НЕ нужен шаблонный лендинг
+# на Tilda» рубился по ключу 'Tilda'. Если прямо перед совпадением стоит
+# отрицание/отказ — это совпадение пропускаем и ищем следующее.
+_NEGATION_BEFORE_RE = re.compile(
+    r"(?:не\s+нужен\w*|не\s+надо|не\s+хочу|не\s+рассматрива\w+|без|никак\w+|"
+    r"вместо|не\s+на|уйти\s+от|отказ\w*\s+от|не\s+использу\w+)"
+    r"\s*(?:шаблонн\w+\s+)?(?:лендинг\w*\s+|сайт\w*\s+|конструктор\w*\s+)?"
+    r"(?:на\s+|в\s+)?$",
+    re.IGNORECASE,
+)
+
+
 def _hard_reject_reason(title: str, description: str) -> Optional[str]:
-    match = _HARD_REJECT_RE.search(f"{title}\n{description}")
-    return match.group(0) if match else None
+    text = f"{title}\n{description}"
+    for match in _HARD_REJECT_RE.finditer(text):
+        prefix = text[max(0, match.start() - 45):match.start()]
+        if _NEGATION_BEFORE_RE.search(prefix):
+            continue  # отрицание («не нужен ... на Tilda») — не повод для reject
+        return match.group(0)
+    return None
 
 
 def detect_no_code_required(title: str, description: str) -> Optional[str]:

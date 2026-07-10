@@ -419,6 +419,48 @@ def run_july_cases() -> int:
     )):
         fails += 1
 
+    # --- Аудит 10.07: отрицание перед CMS-ключом не должно рубить ---
+    from app.kwork_filter import _hard_reject_reason, detect_landing_reject
+
+    print("\n[А1] «НЕ нужен шаблонный лендинг на Tilda» → НЕ hard-reject")
+    if not _check("negation pass", None, _hard_reject_reason(
+        "Разработка посадочной страницы SaaS-продукта",
+        "Важно: не нужен шаблонный лендинг на Tilda. Нужен современный "
+        "SaaS landing page уровня Linear, Notion, Stripe.",
+    )):
+        fails += 1
+
+    print("\n[А2] Реальный заказ на Tilda → hard-reject как раньше")
+    if not _check("tilda reject", True, _hard_reject_reason(
+        "Сайт Шахматного клуба на Tilda",
+        "Нужно сделать сайт шахматного клуба на Tilda, есть референсы.",
+    ) is not None):
+        fails += 1
+
+    print("\n[А3] «без Tilda» → НЕ hard-reject")
+    if not _check("negation pass", None, _hard_reject_reason(
+        "Лендинг", "Хочу лендинг без Tilda, только код.",
+    )):
+        fails += 1
+
+    print("\n[А4] Авторские маркеры (не шаблонный + уровня Linear) → лендинг проходит")
+    if not _check("landing pass", None, detect_landing_reject(
+        "Разработка посадочной страницы SaaS-продукта",
+        "Не нужен шаблонный лендинг. Нужен premium SaaS landing page "
+        "уровня Linear, Notion, Stripe. Аккуратная современная верстка, "
+        "а не конструкторный шаблон.",
+        15000,
+    )):
+        fails += 1
+
+    print("\n[А5] Обычный лендинг 20к без маркеров → reject как раньше")
+    if not _check("landing reject", True, detect_landing_reject(
+        "Создать лендинг продающий",
+        "Нужен продающий лендинг для курса, быстро и недорого.",
+        20000,
+    ) is not None):
+        fails += 1
+
     print("\n" + "=" * 80)
     if fails == 0:
         print("Все кейсы июля прошли ✓")
