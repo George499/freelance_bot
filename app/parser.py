@@ -19,7 +19,6 @@ from app.kwork_filter import (
     MONTHLY_QUOTA,
     HIGH_OFFERS_ABS,
     RECHECK_SCHEDULE_MIN,
-    categorize_by_budget,
     classify_offer_dynamics,
     generate_offer_claude,
     next_recheck_delay_min,
@@ -459,20 +458,18 @@ async def _process_pending_rechecks(bot: Bot, config: Settings, kwork, token) ->
         proj.offers_rechecked = current
         proj.recheck_done = stage
 
-        # Волна 30.06 B1+A1: гейт по АБСОЛЮТУ на замере, не только по темпу.
-        # Очередь забилась к моменту замера → флип в мясорубку по порогам A1
-        # (FAST≥20 / BIG≥25), даже если темп формально не "fast".
-        _cat = categorize_by_budget(int(proj.kwork_price or 0), int(proj.kwork_price or 0))
-        abs_gate = (current >= 20) if _cat == "FAST" else (current >= 25)
-        if abs_gate and verdict != "fast":
-            verdict = "fast"
-            note = f"очередь забита ({current} откликов на {elapsed_min} мин)"
+        # Правка 14.07: сворачиваем в мясорубку ТОЛЬКО по абсолюту ≥ HIGH_OFFERS_ABS
+        # (30, Group 4). Убран abs_gate волн B/C (FAST≥20 / BIG≥25) — по данным
+        # 1-14.07 он схлопывал 75-89% показанных карточек «через время». Полоса
+        # 15-29 (быстрый рост) больше НЕ убивается: карточка живёт до 30, на финале
+        # дописываем пометку о динамике.
+        is_meat = current >= HIGH_OFFERS_ABS
 
         # Планируем следующий замер или завершаем.
         delay = next_recheck_delay_min(stage)
         is_final = delay is None
-        # Мясорубка — прекращаем замеры досрочно (динамика ясна).
-        if verdict == "fast":
+        # Мясорубка (≥30) — прекращаем замеры досрочно (динамика ясна).
+        if is_meat:
             proj.next_recheck_at = 0
         elif is_final:
             proj.next_recheck_at = 0
@@ -481,11 +478,11 @@ async def _process_pending_rechecks(bot: Bot, config: Settings, kwork, token) ->
         await proj.save()
 
         # Обновляем карточку через edit (1.6) только при значимом сигнале:
-        #  - мясорубка (быстрый темп ИЛИ забитая очередь) → сворачиваем (collapse);
-        #  - финальный замер с медленным ростом (узкий, актуален) → дописываем;
-        #  - fresh (ранний всплеск при малом абсолюте, июль 2026) → НЕ сворачиваем,
-        #    дописываем «перепроверить» — кандидат на ручной просмотр.
-        if verdict == "fast":
+        #  - мясорубка (≥30 по абсолюту) → сворачиваем (collapse);
+        #  - финал, узкая ниша / свежий → дописываем как раньше;
+        #  - финал, быстрый рост в полосе 15-29 → помечаем, что очередь набирается,
+        #    но карточку НЕ убиваем (ещё не мясорубка по абсолюту).
+        if is_meat:
             await _recheck_edit_card(
                 bot, config, proj,
                 f"🌊 МЯСОРУБКА: {note} — коннект утонет, скип",
@@ -493,6 +490,11 @@ async def _process_pending_rechecks(bot: Bot, config: Settings, kwork, token) ->
             )
         elif is_final and verdict in ("slow", "fresh"):
             await _recheck_edit_card(bot, config, proj, f"📈 {note}")
+        elif is_final and verdict == "fast":
+            await _recheck_edit_card(
+                bot, config, proj,
+                f"📈 {current} откликов, очередь набирается — <30, ещё не мясорубка",
+            )
         logger.info(
             "RecheckCycle [%s] stage=%d n0=%d→n1=%d verdict=%s",
             (proj.title or "")[:50], stage, n0, current, verdict,
