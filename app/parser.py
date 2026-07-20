@@ -577,6 +577,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
                     "offers": item.get("offers", 0),
                     "time_left": item.get("time_left", 0),
                     "date_confirm": item.get("date_confirm", 0),
+                    "status": item.get("status"),
                     "hired_percent": _extract_hired_percent(item),
                     "buyer_achievements_count": len(achievements),
                     "buyer_achievements_names": achievement_names,
@@ -630,6 +631,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
     stats = {
         "total": len(projects),
         "seen": 0,
+        "status_hold": 0,  # status="new" (не опубликован) — придержали до active
         "hard_reject": 0,
         "low_score_silenced": 0,
         "borderline_sent": 0,
@@ -637,6 +639,16 @@ async def get_kwork_projects(bot: Bot, config: Settings):
     }
 
     for project in projects:
+        # Kwork отдаёт в API-ленте заказы со status="new" (ещё не опубликованы:
+        # модерация / ранний доступ). Их веб-страница /projects/{id} редиректит
+        # на ленту — George не может открыть/откликнуться. Показываем ТОЛЬКО
+        # "active". "new" пропускаем БЕЗ записи в БД, чтобы поймать на следующем
+        # цикле, когда Kwork опубликует (status → active). Подтверждено на
+        # аккаунте: 3221314(new)=редирект, 3221108(active)=открывается.
+        if project.get("status") != "active":
+            stats["status_hold"] += 1
+            continue
+
         kw_project_url = "https://kwork.ru/projects/" + str(project.get("id"))
 
         kw_project = await Project.objects().get_or_create(
@@ -973,10 +985,11 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         await asyncio.sleep(random.choice([1, 2, 3]))
 
     logger.info(
-        "Kwork cycle: total=%d seen=%d new=%d hard_reject=%d low_score=%d borderline=%d recommended=%d",
+        "Kwork cycle: total=%d seen=%d status_hold=%d new=%d hard_reject=%d low_score=%d borderline=%d recommended=%d",
         stats["total"],
         stats["seen"],
-        stats["total"] - stats["seen"],
+        stats["status_hold"],
+        stats["total"] - stats["seen"] - stats["status_hold"],
         stats["hard_reject"],
         stats["low_score_silenced"],
         stats["borderline_sent"],
