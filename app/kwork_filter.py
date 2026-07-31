@@ -1731,6 +1731,73 @@ def detect_applied_ml_bonus(title: str, description: str) -> tuple[int, str]:
     return 0, ""
 
 
+# === Правка 31.07: интеграция С внешней системой через API (узкий срез) ===
+# Разделяем две РАЗНЫЕ профессии, которые легко спутать:
+#   1) НАСТРОЙКА чужой системы (собрать воронку в Битриксе, настроить GetCourse
+#      по ТЗ, внедрить 1С) — кликанье в админке, субъективная приёмка, другая
+#      специальность. Бонуса нет: отзывы оттуда притянут ещё таких же заказов
+#      (дрейф позиционирования).
+#   2) ИНТЕГРАЦИЯ через API (выгрузка из GetCourse в Postgres, вебхуки
+#      Битрикс24 в свой сервис, обмен с 1С через REST) — код на Python/Node
+#      НАШ, а внешняя система лишь точка обмена. Это наша зона, и конкуренция
+#      там 5-14 откликов вместо 40 как в AI-ботах.
+# Бонус даём только при совпадении всех трёх условий: платформа + обмен + код.
+_EXT_PLATFORM_RE = re.compile(
+    r"\bbitrix\s*24\b|\bбитрикс\s*24\b|\bgetcourse\b|\bгеткурс\b|"
+    r"\bamocrm\b|\bамосрм\b|\bамо\s*crm\b|\b1с\b|\b1c\b|"
+    r"\bмойсклад\b|\bmoysklad\b|\bwildberries\b|\bвайлдберриз\b|\bozon\b|"
+    r"\bозон\b|\bяндекс[\s.]*маркет\b|\bтинькофф\b|\bюкасс\w*\b|\byookassa\b",
+    re.IGNORECASE,
+)
+_API_EXCHANGE_RE = re.compile(
+    r"\bapi\b|\bвебхук\w*\b|\bwebhook\w*\b|\brest\b|"
+    r"\bинтеграц\w+\b|\bсинхрониз\w+\b|\bвыгрузк\w+\b|\bвыгружа\w+\b|"
+    r"\bобмен\w*\s+данн\w+\b|\bимпорт\w*\s+данн\w+\b|\bпо\s+токен\w+\b",
+    re.IGNORECASE,
+)
+_OWN_CODE_RE = re.compile(
+    r"\bpython\b|\bпитон\b|\bfastapi\b|\bdjango\b|\bflask\b|\baiohttp\b|"
+    r"\bnode\.?js\b|\bнод[аеу]?\b|\bnest\w*\b|\bpostgre\w*\b|\bsql\b|"
+    r"\bскрипт\w*\b|\bбэкенд\b|\bбекенд\b|\bbackend\b|\bсвой\s+сервис\b|"
+    r"\bмикросервис\w*\b|\bбаз[уые]\s+данных\b|\bdocker\b",
+    re.IGNORECASE,
+)
+# Маркеры чистой настройки — если ТОЛЬКО они, без кода, бонуса нет.
+_PURE_SETUP_RE = re.compile(
+    r"\bнастро\w+\s+(воронк|битрикс|amocrm|амосрм|геткурс|getcourse|1с)|"
+    r"\bвнедри\w+\s+(crm|срм|битрикс|1с)|\bсобрать\s+воронк\w+|"
+    r"\bнастройк[аиу]\s+прав\w+\s+доступа",
+    re.IGNORECASE,
+)
+
+
+def detect_api_integration_bonus(title: str, description: str) -> tuple[int, str]:
+    """Правка 31.07: +2 за интеграцию с внешней системой ЧЕРЕЗ API.
+
+    Требуются все три признака: внешняя платформа + обмен данными (API/вебхук/
+    выгрузка) + наш код (Python/Node/БД). Чистая настройка чужой системы
+    (без кодовых маркеров) бонуса НЕ получает — это другая профессия.
+    """
+    text = f"{title}\n{description}"
+    platform = _EXT_PLATFORM_RE.search(text)
+    if not platform:
+        return 0, ""
+    exchange = _API_EXCHANGE_RE.search(text)
+    if not exchange:
+        return 0, ""
+    code = _OWN_CODE_RE.search(text)
+    if not code:
+        # Платформа + "интеграция" на словах, но кода нет — это настройка.
+        return 0, ""
+    if _PURE_SETUP_RE.search(text) and not _OWN_CODE_RE.search(title):
+        # Явная настройка в заголовке задачи, код упомянут вскользь.
+        return 0, ""
+    return 2, (
+        f"интеграция через API ({platform.group(0)[:20]} + {code.group(0)[:15]}): "
+        f"+2 — код наш, внешняя система только точка обмена (низкая конкуренция)"
+    )
+
+
 # === v5 Идея 39: no-code под видом разработки ===
 # Заказчик использует инженерную терминологию + крошечный бюджет
 # = посмотрел туториал по n8n/Make, думает что blocks → product.
@@ -4138,6 +4205,17 @@ async def score_project(
             logger.info(
                 "AppliedML [%s]: %d→%d — %s",
                 title[:60], old_score, score, ml_reason,
+            )
+
+        # === Правка 31.07: интеграция через API (+2, узкая ниша) ===
+        api_mod, api_reason = detect_api_integration_bonus(title, description)
+        if api_mod:
+            old_score = score
+            score = min(10, score + api_mod)
+            reason = f"{reason}; {api_reason}" if reason else api_reason
+            logger.info(
+                "ApiIntegration [%s]: %d→%d — %s",
+                title[:60], old_score, score, api_reason,
             )
 
         # === Волна 30.06 A2: ML-инженерия вскользь ("или дообучить") -2 ===

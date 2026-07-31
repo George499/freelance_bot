@@ -18,6 +18,7 @@ from app.pause_mode import is_bot_paused
 from app.kwork_filter import (
     MONTHLY_QUOTA,
     HIGH_OFFERS_ABS,
+    LOW_OFFERS_ABS,
     RECHECK_SCHEDULE_MIN,
     classify_offer_dynamics,
     generate_offer_claude,
@@ -673,6 +674,8 @@ async def get_kwork_projects(bot: Bot, config: Settings):
 
         title = project.get("title", "")
         price = project.get("price") or 0
+        offers_count = project.get("offers", 0) or 0
+        farm_active = is_farm_mode_active()
         # Волна 5 (1.2/1.2-bis): верхняя граница Kwork — артефакт (x3 при галочке
         # "можно больше"), не бюджет. Показываем и скорим ТОЛЬКО нижнюю границу.
         # Потолок не показываем совсем — он только засоряет карточку.
@@ -683,9 +686,21 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         # дают мусор (размытые ТЗ, случайные заказчики), а коннект стоит столько
         # же. Демпинг ради отзыва работает на нормальных задачах от ~5к, не на
         # дешёвке за 500-1500₽. price=0 (бюджет не указан) — пропускаем в скоринг.
-        if 0 < price < 5000:
+        #
+        # Правка 31.07 (выход из novice): в режиме отзыв-фарма (/farm_on) порог
+        # опускается до 2000 ₽, но ТОЛЬКО для низкоконкурентных (<15 откликов)
+        # заказов. Узкий дешёвый заказ в фарм-режиме — инвестиция в отзыв, а не
+        # заработок: отзывы дают вес, без которого мы структурно проигрываем в
+        # массовке. До этой правки фарм-режим был холостым — он приоритизирует
+        # простые быстрые заказы, но они резались здесь ДО скоринга. Мусор
+        # дешевле 2000 ₽ режем всегда, в любом режиме.
+        min_budget = 2000 if (farm_active and offers_count < LOW_OFFERS_ABS) else 5000
+        if 0 < price < min_budget:
             stats["low_score_silenced"] += 1
-            logger.info("LowBudgetSkip [%s]: бюджет %d ₽ < 5000 — тишина", title[:60], price)
+            logger.info(
+                "LowBudgetSkip [%s]: бюджет %d ₽ < %d — тишина (farm=%s, offers=%d)",
+                title[:60], price, min_budget, farm_active, offers_count,
+            )
             await asyncio.sleep(random.choice([1, 2, 3]))
             continue
 
@@ -696,7 +711,6 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         buyer_achievements_count = project.get("buyer_achievements_count", 0)
         buyer_achievements_names = project.get("buyer_achievements_names", [])
         user_projects_count = project.get("user_projects_count", 0)
-        offers_count = project.get("offers", 0) or 0
 
         # Аудит 10.07 (D, исправлено): гейт по абсолюту при находке 50 → 30,
         # привязан к HIGH_OFFERS_ABS (Group 4: 30 = настоящая мясорубка).
@@ -721,7 +735,6 @@ async def get_kwork_projects(bot: Bot, config: Settings):
                 await asyncio.sleep(random.choice([1, 2, 3]))
                 continue
 
-        farm_active = is_farm_mode_active()
         score_result = await score_project(
             title=title,
             description=desc,
