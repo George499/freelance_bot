@@ -2034,12 +2034,41 @@ _NEGATION_BEFORE_RE = re.compile(
 )
 
 
+# Правка 07.08 (баг правки 31.07): бонус за интеграцию через API был
+# мертворождённым — hard reject по «\bбитрикс\w*» убивал заказ ДО скоринга,
+# поэтому detect_api_integration_bonus не сработал ни разу за неделю.
+# Различаем два разных продукта с похожим именем:
+#   Битрикс24 — CRM, интеграция С ней через API это наш код (санкционированный
+#     узкий срез: «Битрикс просто внешняя точка»);
+#   1С-Битрикс — CMS для сайтов, это вёрстка/CMS-работа → hard reject навсегда.
+# Разработка ПОД Битрикс24 (модули, приложения, настройка) остаётся отбитой
+# отдельными ключами HARD_REJECT_KEYWORDS — они не содержат слова «битрикс»
+# в чистом виде и сюда не попадают.
+_BITRIX_MATCH_RE = re.compile(r"битрикс|bitrix", re.IGNORECASE)
+_BITRIX24_CRM_RE = re.compile(
+    r"\bбитрикс\s*-?\s*24\b|\bbitrix\s*-?\s*24\b", re.IGNORECASE
+)
+_BITRIX_CMS_RE = re.compile(
+    r"\b1[cс][\s-]*битрикс|\b1[cс][\s-]*bitrix|"
+    r"битрикс\w*\s+управлени\w+\s+сайт|сайт\w*\s+на\s+битрикс",
+    re.IGNORECASE,
+)
+
+
 def _hard_reject_reason(title: str, description: str) -> Optional[str]:
     text = f"{title}\n{description}"
+    # Одна проверка на весь текст, а не на каждое совпадение.
+    bitrix24_api_ok = (
+        bool(_BITRIX24_CRM_RE.search(text))
+        and not _BITRIX_CMS_RE.search(text)
+        and bool(detect_api_integration_bonus(title, description)[0])
+    )
     for match in _HARD_REJECT_RE.finditer(text):
         prefix = text[max(0, match.start() - 45):match.start()]
         if _NEGATION_BEFORE_RE.search(prefix):
             continue  # отрицание («не нужен ... на Tilda») — не повод для reject
+        if bitrix24_api_ok and _BITRIX_MATCH_RE.search(match.group(0)):
+            continue  # интеграция с Битрикс24 через API — наша зона, не CMS
         return match.group(0)
     return None
 
