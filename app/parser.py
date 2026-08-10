@@ -250,8 +250,12 @@ def _format_kwork_message(
         f"{velocity_block}"
         f"Решение: {html.quote(decision_reason)}\n"
         f"Причина скора: {html.quote(score_reason)}\n\n"
-        f"📊 Квота: {quota['remaining']}/{MONTHLY_QUOTA} осталось, "
-        f"{quota['days_left']} дн. до пополнения, режим: {quota['pace']}"
+        # Волна 5 правка 2: показываем бюджет/день и порог, чтобы логика
+        # выбора режима была видна, а не угадывалась по слову «нормально».
+        f"📊 Квота: {quota['remaining']}/{MONTHLY_QUOTA}, "
+        f"{quota['days_left']} дн. до пополнения, "
+        f"бюджет {quota['budget_per_day']}/день → порог "
+        f"{quota['score_threshold']} ({quota['pace']})"
         f"{farm_footer}\n\n"
         f"🔗 {url}"
     )

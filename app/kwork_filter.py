@@ -3155,31 +3155,44 @@ def quota_status(
         days_until_refill: дней до пополнения квоты Kwork
         period_days: длина периода (30)
 
-    Минимальный порог всегда 7 (не ниже).
-    Early-period (<20% прошло) → 8 (ждём лучших)
-    Резерв (последняя неделя + мало осталось) → 8
+    Волна 5 правка 2: порог считается от бюджета коннектов НА ДЕНЬ, а не от
+    остатка. Раньше 12 коннектов за 20 дней и 12 за 1 день давали одинаковый
+    порог, хотя это противоположные ситуации: в начале цикла коннект ценен,
+    в конце — неистраченный коннект стоит НОЛЬ. Реальный случай августа:
+    полцикла бот берёг коннекты «под идеальный матч», а в последний день
+    сгорело 12 штук.
+
+    budget_per_day = остаток / дней до пополнения:
+        < 0.7  → 8  жёсткая экономия, только сильные совпадения
+        0.7-1.5 → 7  поведение по умолчанию
+        1.5-3.0 → 6  тратим активнее
+        > 3.0  → 5  сгорают, берём всё адекватное
+
+    Формула поглощает прежние режимы: «опережаю» = низкий бюджет, «резерв» =
+    мало осталось при многих днях (2/10 = 0.2 → 8). Меняется ТОЛЬКО порог
+    отправки уведомления: поток не режется, hard reject'ы и нижняя граница
+    по цене заказа не зависят от него.
     """
     remaining = MONTHLY_QUOTA - used_this_month
     period_elapsed = period_days - days_until_refill
     period_progress = period_elapsed / period_days if period_days > 0 else 0
     quota_used_ratio = used_this_month / MONTHLY_QUOTA if MONTHLY_QUOTA > 0 else 0
 
-    is_early = period_progress < 0.2
     is_reserve = days_until_refill <= 7 and remaining < RESERVE_QUOTA_FOR_LAST_DAYS
 
-    score_threshold = MIN_SCORE_FOR_RESPONSE
-
-    if is_early:
+    budget_per_day = remaining / max(days_until_refill, 1)
+    if budget_per_day < 0.7:
         score_threshold = 8
-        pace = "ранний период"
-    elif is_reserve:
-        score_threshold = 8
-        pace = "резерв"
-    elif quota_used_ratio > period_progress * 1.3:
-        score_threshold = 8
-        pace = "опережаю"
-    else:
+        pace = "жёсткая экономия"
+    elif budget_per_day < 1.5:
+        score_threshold = MIN_SCORE_FOR_RESPONSE
         pace = "нормально"
+    elif budget_per_day <= 3.0:
+        score_threshold = 6
+        pace = "тратим активнее"
+    else:
+        score_threshold = 5
+        pace = "сгорают"
 
     daily_allowed = max(0, DAILY_SOFT_LIMIT - used_today)
     if remaining <= 0:
@@ -3192,6 +3205,7 @@ def quota_status(
         "daily_allowed": daily_allowed,
         "score_threshold": score_threshold,
         "pace": pace,
+        "budget_per_day": round(budget_per_day, 1),
         "period_progress": round(period_progress, 2),
         "quota_used_ratio": round(quota_used_ratio, 2),
     }
@@ -4610,8 +4624,12 @@ def should_respond(
         return True, f"AI, скор {score} (порог {threshold})"
     if score < threshold:
         return False, f"скор {score} < порога {threshold} ({quota['pace']})"
-    if quota["reserve_active"] and quota["remaining"] <= RESERVE_QUOTA_FOR_LAST_DAYS:
-        if score < 8:
-            return False, f"резерв: нужен ≥8, получен {score}"
+    # Волна 5 правка 2: старый резерв-гейт («последняя неделя + остаток ≤7 →
+    # нужен скор ≥8») УБРАН — он структурно ломал саму правку. Пример: 6
+    # коннектов за день до пополнения дают budget_per_day=6.0 → порог 5
+    # («сгорают, берём всё адекватное»), а резерв тут же требовал ≥8, и
+    # коннекты сгорали неиспользованными. Ровно этот случай и описан в ТЗ.
+    # Обратный случай (мало осталось при многих днях) формула держит сама:
+    # 2 коннекта на 10 дней = 0.2 → порог 8.
 
     return True, f"скор {score} ≥ порога {threshold}"
