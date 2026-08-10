@@ -45,6 +45,7 @@ from app.quota import (
     MONTHLY_QUOTA,
     get_days_until_refill,
     get_quota,
+    is_quota_from_api,
     increment_response,
     init_quota,
     reset_today,
@@ -65,12 +66,18 @@ async def cmd_quota(message: Message):
     remaining = MONTHLY_QUOTA - used
     today_used = state["responses_used_today"]
 
+    source = (
+        f"✅ из API Kwork (синк {state.get('api_synced_at', '?')})"
+        if is_quota_from_api()
+        else "⚠️ ручной счёт — неточно, API не отвечал"
+    )
     text = (
         f"📊 <b>Статус квоты Kwork</b>\n\n"
         f"Осталось: <b>{remaining}/{MONTHLY_QUOTA}</b>\n"
         f"Использовано сегодня: <b>{today_used}</b>\n"
         f"Дней до пополнения: <b>{days_left}</b>\n"
-        f"Дата пополнения: <code>{state['next_refill_date']}</code>\n\n"
+        f"Дата пополнения: <code>{state['next_refill_date']}</code>\n"
+        f"Источник: {source}\n\n"
         f"<i>Команды:\n"
         f"/setrefill YYYY-MM-DD [used] — задать дату пополнения\n"
         f"/setremaining N — синхронизировать с Kwork\n"
@@ -196,11 +203,14 @@ def _pause_panel_text(quota_state: dict) -> str:
         else "▶️ <b>Активен</b> — Kwork-цикл идёт каждые 10 мин"
     )
     farm_line = "⚡ Отзыв-фарм: ВКЛ" if farm else "Отзыв-фарм: выкл"
+    # Волна 5 правка 1: помечаем цифру когда API молчит и работает
+    # ручной счётчик (кнопка «Отправил отклик») — он занижает расход.
+    accuracy = "" if is_quota_from_api() else " ⚠️ неточно (нет данных API)"
     return (
         f"{pause_line}\n"
         f"{farm_line}\n\n"
         f"📊 Квота: <b>{remaining}/{MONTHLY_QUOTA}</b>, "
-        f"сегодня {today_used}, {days_left} дн. до пополнения"
+        f"сегодня {today_used}, {days_left} дн. до пополнения{accuracy}"
     )
 
 

@@ -10,8 +10,8 @@ Kwork использует rolling-период: квота пополняетс
 
 import json
 import os
-from datetime import date, timedelta
-from typing import Dict
+from datetime import date, datetime, timedelta
+from typing import Dict, Optional
 
 QUOTA_FILE = os.path.join("app", "db", "database", "quota.json")
 
@@ -155,6 +155,69 @@ def increment_borderline() -> dict:
     state["borderline_sent_today"] = int(state.get("borderline_sent_today", 0)) + 1
     save_quota(state)
     return state
+
+
+# === Волна 5 правка 1 (P0): автоматический учёт коннектов через Kwork API ===
+# Ручное подтверждение (кнопка «Отправил отклик») давало завышенный остаток —
+# кнопку жмут не всегда, а на этой цифре висит адаптивная фильтрация. Теперь
+# источник правды — сам Kwork: блок `connects` приходит В ТОМ ЖЕ ответе на
+# api_method="projects", который цикл и так запрашивает, поэтому
+# дополнительных запросов к API не делаем (get_connects() не нужен).
+#
+# Синхронизируем именно `responses_used`, а не заводим параллельный счётчик —
+# так все существующие места (дайджест, панель паузы, quota_status) работают
+# без изменений. Ручной инкремент остаётся fallback'ом между синками.
+
+# Через сколько часов цифра из API считается протухшей (API молчит/упал).
+QUOTA_API_STALE_HOURS = 2
+
+
+def sync_from_api(
+    all_connects: Optional[int],
+    active_connects: Optional[int],
+    update_time: Optional[int] = None,
+) -> dict:
+    """Записать остаток коннектов из ответа Kwork API.
+
+    Args:
+        all_connects: всего в квоте (обычно 30)
+        active_connects: осталось
+        update_time: unix ts пополнения (дата приходит с сервера — считать
+            её самостоятельно больше не нужно)
+
+    Если API вернул None — состояние не трогаем, остаётся последнее
+    известное значение (см. is_quota_from_api для пометки о неточности).
+    """
+    if active_connects is None or all_connects is None:
+        return get_quota()
+
+    state = get_quota()  # сначала штатные сбросы, потом перезапись из API
+    state["responses_used"] = max(0, int(all_connects) - int(active_connects))
+    state["api_all_connects"] = int(all_connects)
+    state["api_active_connects"] = int(active_connects)
+    state["api_synced_at"] = datetime.now().isoformat(timespec="seconds")
+    if update_time:
+        state["api_update_time"] = int(update_time)
+        state["next_refill_date"] = (
+            datetime.fromtimestamp(int(update_time)).date().isoformat()
+        )
+    save_quota(state)
+    return state
+
+
+def is_quota_from_api() -> bool:
+    """True если цифра квоты пришла из API и ещё не протухла.
+
+    False → показываем цифру с пометкой «неточно» (работает ручной счётчик).
+    """
+    synced_at = get_quota().get("api_synced_at")
+    if not synced_at:
+        return False
+    try:
+        synced = datetime.fromisoformat(synced_at)
+    except (ValueError, TypeError):
+        return False
+    return (datetime.now() - synced) < timedelta(hours=QUOTA_API_STALE_HOURS)
 
 
 def set_remaining(remaining: int) -> dict:

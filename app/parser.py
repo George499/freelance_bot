@@ -32,6 +32,7 @@ from app.quota import (
     get_days_until_refill,
     get_quota,
     increment_borderline,
+    sync_from_api,
 )
 from kwork import Kwork
 
@@ -533,6 +534,25 @@ async def get_kwork_projects(bot: Bot, config: Settings):
 
     if not raw_projects["success"]:
         return await kwork.close()
+
+    # Волна 5 правка 1 (P0): остаток коннектов из API. Kwork кладёт блок
+    # `connects` в ЭТОТ ЖЕ ответ, поэтому отдельный get_connects() не нужен —
+    # нулевая дополнительная нагрузка. Раньше остаток считался от ручных
+    # нажатий кнопки «Отправил отклик», и дайджест врал (30/30 при реальных
+    # 17/30), а на этой цифре висит адаптивная фильтрация.
+    connects = raw_projects.get("connects") or {}
+    if connects.get("active_connects") is not None:
+        sync_from_api(
+            all_connects=connects.get("all_connects"),
+            active_connects=connects.get("active_connects"),
+            update_time=connects.get("update_time"),
+        )
+        logger.info(
+            "QuotaSync: осталось %s/%s коннектов (пополнение ts=%s)",
+            connects.get("active_connects"),
+            connects.get("all_connects"),
+            connects.get("update_time"),
+        )
 
     def _extract_hired_percent(item: dict) -> int | None:
         """Пытается вытащить процент найма заказчика из разных возможных полей Kwork API."""
