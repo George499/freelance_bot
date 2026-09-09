@@ -11,12 +11,14 @@
 - /setrefill YYYY-MM-DD [used] — задать дату пополнения и (опционально) уже потраченные отклики
 - /setremaining N — синхронизировать с Kwork, указав сколько осталось из 30
 - /resettoday — сбросить дневной счётчик
+- /live — актуальные заказы без скоринга (работает без Anthropic-кредитов)
 
 Callback:
 - kw_sent:{project_id} — нажатие "Отправил отклик" инкрементирует квоту
 - kw_skip:{project_id} — нажатие "Пропустить" просто меняет клавиатуру
 """
 
+import asyncio
 import logging
 import re
 from datetime import date, datetime
@@ -39,6 +41,7 @@ from app.kwork_filter import (
     classify_offer_dynamics,
     generate_offer_claude,
     recommend_dump_price,
+    score_project,
 )
 from app.pause_mode import is_bot_paused, set_bot_paused
 from app.quota import (
@@ -446,3 +449,109 @@ async def cb_kwork_skip(callback: CallbackQuery):
         pass
     await _safe_answer(callback, "Пропущено", show_alert=False)
     logger.info("Project %s skipped", project_id)
+
+
+# === Сентябрь 2026: /live — заказы без скоринга Haiku ===
+# Нужна когда Anthropic недоступен (кончились кредиты): в этом состоянии
+# score_project падает на каждом заказе, parser глушит его через
+# ScoringErrorSilenced, и до Telegram не доходит НИЧЕГО (в дайджесте нули).
+# Здесь скоринг сознательно пропускается, но все hard-reject фильтры бота
+# отрабатывают полностью — они выполняются ДО обращения к Haiku.
+LIVE_MAX_AGE_H = 48      # старше — уже разобрали
+LIVE_MAX_OFFERS = 20     # выше — мясорубка, новичку не пробиться
+LIVE_SHOW_LIMIT = 12     # чтобы уложиться в лимит сообщения Telegram
+
+
+@quota_router.message(Command("live"))
+async def cmd_live(message: Message, config: Settings):
+    """Актуальные заказы: не сняты (status=active), свежие, без мясорубки."""
+    await message.answer("🔍 Собираю актуальные заказы (без скоринга)…")
+    try:
+        kwork = Kwork(
+            login=config.kw_login,
+            password=config.kw_password,
+            phone_last=config.kw_phone_last,
+        )
+        token = await kwork.token
+        raw = await kwork.api_request(
+            method="post", api_method="projects",
+            categories=config.kw_categories, page=1, token=token,
+        )
+        items = list(raw["response"])
+        for page in range(2, int(raw["paging"].get("pages", 1)) + 1):
+            more = await kwork.api_request(
+                method="post", api_method="projects",
+                categories=config.kw_categories, page=page, token=token,
+            )
+            items.extend(more["response"])
+        await kwork.close()
+    except Exception as exc:
+        logger.warning("LiveCmd: ошибка Kwork API: %s", exc)
+        await message.answer("⚠️ Не удалось получить ленту Kwork.")
+        return
+
+    now = int(datetime.now().timestamp())
+    pool = [
+        i for i in items
+        if i.get("status") == "active"
+        and i.get("date_confirm")
+        and (now - i["date_confirm"]) <= LIVE_MAX_AGE_H * 3600
+        and (i.get("offers") or 0) <= LIVE_MAX_OFFERS
+    ]
+
+    async def _keep(item: dict):
+        """None если заказ отбит hard-reject'ом. Haiku внутри упадёт — ожидаемо."""
+        try:
+            res = await score_project(
+                title=item.get("title") or "",
+                description=item.get("description") or "",
+                budget=f"{item.get('price') or 0} ₽",
+                deadline=f"{(item.get('time_left') or 0) // 86400} дней",
+                responses_count=item.get("offers") or 0,
+                anthropic_api_key=config.anthropic_api_key,
+                hired_percent=item.get("user_hired_percent"),
+                buyer_achievements=len(item.get("achievements_list") or []),
+                farm_mode_active=is_farm_mode_active(),
+                user_projects_count=item.get("user_projects_count") or 0,
+                profile_reviews_count=config.profile_reviews_count,
+            )
+        except Exception:
+            return item  # скоринг недоступен — заказ не виноват, показываем
+        return None if res.get("hard_reject") else item
+
+    checked = await asyncio.gather(*[_keep(i) for i in pool])
+    good = sorted(
+        [i for i in checked if i], key=lambda x: x.get("offers") or 0
+    )
+    rich = [i for i in good if (i.get("price") or 0) >= 5000]
+    cheap = [i for i in good if (i.get("price") or 0) < 5000]
+
+    def _row(i: dict) -> str:
+        age_h = (now - i["date_confirm"]) / 3600
+        hired = i.get("user_hired_percent")
+        hired_s = f"наём {hired}%" if hired is not None else "наём н/д"
+        return (
+            f"<b>{i.get('offers') or 0} откл</b> · {i.get('price') or 0} ₽ · "
+            f"{age_h:.0f}ч · {hired_s}\n"
+            f"{html.quote((i.get('title') or '')[:60])}\n"
+            f"https://kwork.ru/projects/{i.get('id')}/view"
+        )
+
+    parts = [
+        f"📋 <b>Актуальные заказы</b> (active, до {LIVE_MAX_AGE_H}ч, "
+        f"до {LIVE_MAX_OFFERS} откликов)\n"
+        f"Скоринг пропущен — hard-reject фильтры отработали.\n"
+    ]
+    if rich:
+        parts.append(f"\n💰 <b>От 5000 ₽</b> ({len(rich)}):\n\n" +
+                     "\n\n".join(_row(i) for i in rich[:LIVE_SHOW_LIMIT]))
+    if cheap:
+        parts.append(f"\n\n🌱 <b>Дешёвые, на отзыв</b> ({len(cheap)}):\n\n" +
+                     "\n\n".join(_row(i) for i in cheap[:LIVE_SHOW_LIMIT]))
+    if not good:
+        parts.append("\nНичего не прошло фильтры.")
+
+    text = "".join(parts)
+    for chunk_start in range(0, len(text), 3800):
+        await message.answer(text[chunk_start:chunk_start + 3800],
+                             disable_web_page_preview=True)
