@@ -587,7 +587,7 @@ _AUTHORSHIP_RE = re.compile("|".join(AUTHORSHIP_MARKERS), re.IGNORECASE)
 
 HARD_REJECT_KEYWORDS = (
     # Русские склонения через \w* (исправление: \bбитрикс\b не ловил 'битриксе/битрикса')
-    r"\b1c[\s-]*битрикс\w*", r"\bбитрикс\w*", r"\bbitrix\b",
+    r"\b1c[\s-]*битрикс\w*", r"\bбитрикс\w*", r"\bbitrix\w*",
     r"\bwordpress\b", r"\bвордпресс\w*", r"\bна\s+wp\b",
     # русское сокращение WP + типичные плагины
     r"\bна\s+(сайт\w*\s+)?вп\b", r"\bвп[\s-]?сайт", r"\bсайт\s+на\s+вп\b",
@@ -2074,6 +2074,15 @@ _OUR_WORK_RE = re.compile(
 # Предмет работы — сама CMS: создать/сверстать/наполнить сайт на ней.
 # Это перебивает маркер нашей работы: «сделать лендинг на Тильде и прикрутить
 # API» всё равно остаётся вёрсткой.
+# Настройка/внедрение CRM — отдельная профессия (кликанье в админке,
+# субъективная приёмка). Перебивает маркер нашей работы так же, как вёрстка.
+_CRM_SETUP_IS_THE_JOB_RE = re.compile(
+    r"(?:настро|внедр|систематизац|интегратор)\w*[\s\w,\-]{0,45}?"
+    r"(?:crm|срм|amocrm|амосрм|bitrix|битрикс)",
+    re.IGNORECASE,
+)
+
+
 _CMS_IS_THE_JOB_RE = re.compile(
     r"\b(?:сдела\w+|созда\w+|разработ\w+|сверста\w+|верстк\w+|вёрстк\w+|"
     r"наполн\w+|скопиру\w+|копирован\w+|ребрендинг|перенес\w+|перенос)\s+"
@@ -2100,7 +2109,11 @@ def _hard_reject_reason(title: str, description: str) -> Optional[str]:
     # было сделано только для Битрикс24; обобщаем на все платформы.
     # Отправку это не расширяет: автоотклик защищён отдельным стек-фильтром,
     # сюда попадают только карточки для просмотра.
-    our_work_ok = bool(_OUR_WORK_RE.search(text)) and not _CMS_IS_THE_JOB_RE.search(text)
+    our_work_ok = (
+        bool(_OUR_WORK_RE.search(text))
+        and not _CMS_IS_THE_JOB_RE.search(text)
+        and not _CRM_SETUP_IS_THE_JOB_RE.search(text)
+    )
     for match in _HARD_REJECT_RE.finditer(text):
         prefix = text[max(0, match.start() - 45):match.start()]
         if _NEGATION_BEFORE_RE.search(prefix):

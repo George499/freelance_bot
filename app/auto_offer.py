@@ -53,11 +53,12 @@ _STACK_OK = re.compile(
 
 # Чёрный список: чужая профессия. Перебивает белый.
 _STACK_BAD = re.compile(
-    r"\b1с\b|\b1c\b|битрикс\w*|\bbitrix\b|\bwordpress\b|вордпресс\w*|"
+    r"\b1с\b|\b1c\b|битрикс\w*|\bbitrix\w*|\bwordpress\b|вордпресс\w*|"
     r"тильд\w+|\btilda\b|\bopencart\b|\bjoomla\b|\bwix\b|\bshopify\b|\bmodx\b|"
     r"вёрстк\w+|верстк\w+|фигм\w+|\bfigma\b|дизайн\w*\s+макет|"
     r"\bios\b|\bandroid\b|\bswift\b|\bkotlin\b|\bflutter\b|"
     r"консультац\w+|консультант\w*|обучени\w+|репетитор\w*|"
+    r"настройк[аиуе]\s+(?:crm|срм|amocrm|bitrix|битрикс)|интегратор\s+\w*bitrix|"
     r"\bseo\b|\bсмм\b|\bsmm\b|таргет\w+|копирайт\w+|рерайт\w+|"
     r"\bunity\b|юнити|блендер|\bblender\b|\bphp\b|\blaravel\b",
     re.IGNORECASE,
