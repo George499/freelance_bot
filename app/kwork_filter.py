@@ -2059,6 +2059,31 @@ _BITRIX_CMS_RE = re.compile(
 )
 
 
+# Правка 17.09: сильный маркер НАШЕЙ работы. Если задача — парсер, бот,
+# интеграция по API, выгрузка или синхронизация данных, то упомянутая CMS это
+# просто внешняя точка обмена, а не предмет работы.
+_OUR_WORK_RE = re.compile(
+    r"\bпарсер\w*|\bпарсинг\w*|\bспарси\w+|\bскрейп\w*|"
+    r"\bинтеграц\w+\s+(?:по\s+)?(?:api|апи)|\b(?:по|через)\s+(?:api|апи)\b|"
+    r"\bвебхук\w*|\bwebhook|\brest\s*api\b|"
+    r"\bвыгрузк\w+\s+данн|\bсинхронизац\w+\s+данн|\bобмен\s+данн\w+|"
+    r"\bтелеграм\w*[\s-]*бот|\btelegram[\s-]*bot|\bтг[\s-]*бот|"
+    r"\bскрипт\w*\s+на\s+python|\bбот\s+на\s+(?:python|aiogram)",
+    re.IGNORECASE,
+)
+# Предмет работы — сама CMS: создать/сверстать/наполнить сайт на ней.
+# Это перебивает маркер нашей работы: «сделать лендинг на Тильде и прикрутить
+# API» всё равно остаётся вёрсткой.
+_CMS_IS_THE_JOB_RE = re.compile(
+    r"\b(?:сдела\w+|созда\w+|разработ\w+|сверста\w+|верстк\w+|вёрстк\w+|"
+    r"наполн\w+|скопиру\w+|копирован\w+|ребрендинг|перенес\w+|перенос)\s+"
+    r"(?:[а-яёa-z0-9\s,\-]{0,30}?)"
+    r"(?:сайт\w*|лендинг\w*|магазин\w*|интернет[\s-]?магазин\w*|визитк\w*|"
+    r"landing|многостраничник\w*)",
+    re.IGNORECASE,
+)
+
+
 def _hard_reject_reason(title: str, description: str) -> Optional[str]:
     text = f"{title}\n{description}"
     # Одна проверка на весь текст, а не на каждое совпадение.
@@ -2067,12 +2092,23 @@ def _hard_reject_reason(title: str, description: str) -> Optional[str]:
         and not _BITRIX_CMS_RE.search(text)
         and bool(detect_api_integration_bonus(title, description)[0])
     )
+    # Правка 17.09 (поток упал вдвое: 50 карточек/неделю в июле против 15-18
+    # сейчас). Разбор 75 зарезанных заказов от 5000 ₽ показал реальные потери:
+    # «Интеграция сервиса по апи с битрикс» 15к, «Парсер объектов и публикация
+    # на сайте Tilda» 30к, «Интеграция сайта на Tilda с маркетплейсами» 7к.
+    # Это наша работа, CMS в них — внешняя точка. В августе такое исключение
+    # было сделано только для Битрикс24; обобщаем на все платформы.
+    # Отправку это не расширяет: автоотклик защищён отдельным стек-фильтром,
+    # сюда попадают только карточки для просмотра.
+    our_work_ok = bool(_OUR_WORK_RE.search(text)) and not _CMS_IS_THE_JOB_RE.search(text)
     for match in _HARD_REJECT_RE.finditer(text):
         prefix = text[max(0, match.start() - 45):match.start()]
         if _NEGATION_BEFORE_RE.search(prefix):
             continue  # отрицание («не нужен ... на Tilda») — не повод для reject
         if bitrix24_api_ok and _BITRIX_MATCH_RE.search(match.group(0)):
             continue  # интеграция с Битрикс24 через API — наша зона, не CMS
+        if our_work_ok:
+            continue  # предмет работы наш, платформа лишь упомянута
         return match.group(0)
     return None
 
