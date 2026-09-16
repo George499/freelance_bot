@@ -12,6 +12,7 @@
 - /setremaining N — синхронизировать с Kwork, указав сколько осталось из 30
 - /resettoday — сбросить дневной счётчик
 - /live — актуальные заказы без скоринга (работает без Anthropic-кредитов)
+- /auto_on, /auto_off, /auto_status — автоотправка откликов
 
 Callback:
 - kw_sent:{project_id} — нажатие "Отправил отклик" инкрементирует квоту
@@ -42,6 +43,12 @@ from app.kwork_filter import (
     generate_offer_claude,
     recommend_dump_price,
     score_project,
+)
+from app.auto_offer import (
+    DAILY_LIMIT as AUTO_DAILY_LIMIT,
+    MIN_SCORE as AUTO_MIN_SCORE,
+    get_state as get_auto_state,
+    set_auto,
 )
 from app.pause_mode import is_bot_paused, set_bot_paused
 from app.quota import (
@@ -555,3 +562,56 @@ async def cmd_live(message: Message, config: Settings):
     for chunk_start in range(0, len(text), 3800):
         await message.answer(text[chunk_start:chunk_start + 3800],
                              disable_web_page_preview=True)
+
+
+# === Сентябрь 2026: управление автоотправкой откликов ===
+
+
+@quota_router.message(Command("auto_on"))
+async def cmd_auto_on(message: Message):
+    """Включить автоотправку откликов."""
+    set_auto(True)
+    st = get_auto_state()
+    await message.answer(
+        "🤖 <b>Автоотклик ВКЛЮЧЁН</b>\n\n"
+        f"Условия отправки (все должны совпасть):\n"
+        f"• скор ≥ <b>{AUTO_MIN_SCORE}</b>\n"
+        f"• заказ в моём стеке (Python/Node/боты/API/парсинг)\n"
+        f"• не больше <b>{AUTO_DAILY_LIMIT}</b> в день (сегодня {st.get('sent_today', 0)})\n"
+        f"• цена = нижняя граница бюджета заказчика\n\n"
+        "После каждой отправки пришлю заказ, цену и полный текст.\n"
+        "Выключить: /auto_off · история: /auto_status"
+    )
+
+
+@quota_router.message(Command("auto_off"))
+async def cmd_auto_off(message: Message):
+    """Стоп-кран."""
+    set_auto(False)
+    await message.answer(
+        "🛑 <b>Автоотклик ВЫКЛЮЧЕН</b>. Ничего не отправляется.\n"
+        "Включить обратно: /auto_on"
+    )
+
+
+@quota_router.message(Command("auto_status"))
+async def cmd_auto_status(message: Message):
+    """Состояние автоотклика и что уже ушло."""
+    st = get_auto_state()
+    on = st.get("enabled")
+    lines = [
+        f"🤖 Автоотклик: <b>{'ВКЛЮЧЁН' if on else 'выключен'}</b>",
+        f"Сегодня отправлено: <b>{st.get('sent_today', 0)}/{AUTO_DAILY_LIMIT}</b>",
+        f"Порог скора: {AUTO_MIN_SCORE}",
+    ]
+    log = st.get("log") or []
+    if log:
+        lines.append("\n<b>Последние отправленные:</b>")
+        for rec in log[:10]:
+            lines.append(
+                f"• {rec.get('at')} · {rec.get('price')} ₽ · "
+                f"{html.quote(str(rec.get('title'))[:55])}"
+            )
+    else:
+        lines.append("\nПока ничего не отправлялось.")
+    await message.answer("\n".join(lines))

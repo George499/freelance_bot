@@ -14,6 +14,17 @@ from app.bot.keyboards import apply_button
 from app.config_reader import Settings
 from app.db.tables import FreelancePlatform, Project
 from app.farm_mode import is_farm_mode_active
+from app.auto_offer import (
+    DAILY_LIMIT as AUTO_DAILY_LIMIT,
+    MIN_SCORE as AUTO_MIN_SCORE,
+    can_send_today,
+    duration_for,
+    get_state as get_auto_state,
+    is_auto_enabled,
+    is_my_stack,
+    register_sent,
+    send_offer,
+)
 from app.pause_mode import is_bot_paused
 from app.kwork_filter import (
     MONTHLY_QUOTA,
@@ -508,6 +519,72 @@ async def _process_pending_rechecks(bot: Bot, config: Settings, kwork, token) ->
         await asyncio.sleep(random.choice([1, 2]))
 
 
+async def _auto_offer_send(
+    bot: Bot, config: Settings, kw_project, title: str, desc: str,
+    budget_str: str, price: int, score_result: dict,
+) -> None:
+    """Сгенерировать и отправить отклик, затем отчитаться в Telegram.
+
+    Отчёт обязателен: George должен видеть каждое слово, ушедшее от его
+    имени, иначе автомату нельзя доверять.
+    """
+    m = re.search(r"/projects/(\d+)", kw_project.url or "")
+    kw_id = m.group(1) if m else None
+    if not kw_id:
+        logger.warning("AutoOffer: не извлёк id из %s", kw_project.url)
+        return
+
+    try:
+        offer_text = await generate_offer_claude(
+            title=title,
+            description=desc,
+            budget=budget_str,
+            anthropic_api_key=config.anthropic_api_key,
+            is_ai=score_result.get("is_ai", False),
+            scope_unclear=score_result.get("scope_unclear", False),
+            site_category=score_result.get("site_category", "not_site"),
+            is_fast=price < 15000,
+        )
+    except Exception as exc:
+        logger.warning("AutoOffer: генерация провалилась [%s]: %s", title[:50], exc)
+        return
+
+    if not offer_text or len(offer_text) < 100:
+        logger.warning("AutoOffer: пустой/короткий текст [%s]", title[:50])
+        return
+
+    ok, detail = await send_offer(
+        config=config, project_id=kw_id, description=offer_text,
+        price=price, title=title,
+    )
+    if ok:
+        register_sent(kw_id, title, price)
+        state = get_auto_state()
+        logger.info("AutoOfferSent [%s] за %s ₽", title[:50], price)
+        await bot.send_message(
+            chat_id=config.tg_group,
+            message_thread_id=config.tg_topic_id,
+            text=(
+                f"🤖 <b>Отклик отправлен автоматически</b>\n"
+                f"{html.quote(title[:70])}\n"
+                f"Цена: <b>{price} ₽</b> · срок {duration_for(price)} дн. · "
+                f"сегодня {state.get('sent_today')}/{AUTO_DAILY_LIMIT}\n\n"
+                f"<i>Текст, ушедший заказчику:</i>\n{html.quote(offer_text)}"
+            ),
+            disable_web_page_preview=True,
+        )
+    else:
+        logger.warning("AutoOfferFail [%s]: %s", title[:50], detail)
+        await bot.send_message(
+            chat_id=config.tg_group,
+            message_thread_id=config.tg_topic_id,
+            text=(
+                f"⚠️ Автоотклик не ушёл: {html.quote(title[:60])}\n"
+                f"Причина: {html.quote(detail[:200])}"
+            ),
+        )
+
+
 async def get_kwork_projects(bot: Bot, config: Settings):
     # Soft-pause: цикл пропускается пока флаг активен (управление через /pause).
     if is_bot_paused():
@@ -998,6 +1075,31 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             kw_project.first_seen_at.timestamp()
         ) + RECHECK_SCHEDULE_MIN[0] * 60
         await kw_project.save()
+
+        # === Сентябрь 2026: автоотклик ===
+        # George перестал откликаться вручную (за 3 недели 0 нажатий при 28
+        # присланных карточках) — не от нехватки заказов, а от эмоциональной
+        # цены отправки в тишину. Коннекты сгорали неиспользованными.
+        # Бот берёт первую часть воронки на себя; George включается только
+        # когда заказчик ответил в личку.
+        # Предохранители: стек-фильтр (жёстче скора — он спасает от истории,
+        # когда генератор выдумал экспертизу в 1С), порог скора, лимит в день.
+        if (
+            respond
+            and is_auto_enabled()
+            and config.anthropic_api_key
+            and score_result["score"] >= AUTO_MIN_SCORE
+        ):
+            stack_ok, stack_why = is_my_stack(title, desc)
+            if not stack_ok:
+                logger.info("AutoOfferSkip [%s]: %s", title[:50], stack_why)
+            elif not can_send_today():
+                logger.info("AutoOfferSkip [%s]: дневной лимит исчерпан", title[:50])
+            else:
+                await _auto_offer_send(
+                    bot, config, kw_project, title, desc, budget_str,
+                    price, score_result,
+                )
 
         # Генерация черновика отклика временно отключена — user разбирает
         # вручную в Claude-чате. Раскомментировать когда промпт доведём.
