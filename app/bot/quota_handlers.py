@@ -615,3 +615,23 @@ async def cmd_auto_status(message: Message):
     else:
         lines.append("\nПока ничего не отправлялось.")
     await message.answer("\n".join(lines))
+
+
+# === Команды должны работать и в канале ===
+# TG_GROUP это channel (get_chat -> type=channel), а не группа. Telegram шлёт
+# туда channel_post, а не message, поэтому @quota_router.message(Command(...))
+# их не ловит: команда молча уходила в "Update is not handled", бот не отвечал
+# и выглядел сломанным. Регистрируем те же функции на channel_post - Message
+# там такой же, message.answer() отвечает в канал.
+for _cmd, _handler in (
+    ("quota", cmd_quota),
+    ("live", cmd_live),
+    ("auto_on", cmd_auto_on),
+    ("auto_off", cmd_auto_off),
+    ("auto_status", cmd_auto_status),
+    ("farm_on", cmd_farm_on),
+    ("farm_off", cmd_farm_off),
+    ("farm_status", cmd_farm_status),
+    ("resettoday", cmd_resettoday),
+):
+    quota_router.channel_post.register(_handler, Command(_cmd))
