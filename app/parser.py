@@ -1111,7 +1111,22 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             and score_result["score"] >= AUTO_MIN_SCORE
         ):
             stack_ok, stack_why = is_my_stack(title, desc)
-            if not stack_ok:
+            # Правка 16.09: не отправляем в «широкое мясо». Отклики у заказчика
+            # сортируются НОВЫЕ СВЕРХУ, а читает он их через день-два (данные
+            # George по его же переписке). За сутки широкая тема набирает
+            # +30 в среднем (замер: «интернет-магазин гаджетов» 5→127 за 23ч,
+            # «сайт-визитка на WP» 4→74 за 13ч) — наш отклик к моменту чтения
+            # лежит на дне списка, коннект сгорает впустую. Узкие остаются с
+            # 2-7 откликами сутки спустя («сбор компаний» 1→4, «IP-телефония»
+            # 1→7), там список короткий и позиция роли не играет.
+            # Задержка отправки не помогает: поток не иссякает, ждать нечего.
+            tier = score_result.get("competition_tier")
+            if tier == "wide":
+                logger.info(
+                    "AutoOfferSkip [%s]: широкое мясо — за сутки набежит толпа",
+                    title[:50],
+                )
+            elif not stack_ok:
                 logger.info("AutoOfferSkip [%s]: %s", title[:50], stack_why)
             elif not can_send_today():
                 logger.info("AutoOfferSkip [%s]: дневной лимит исчерпан", title[:50])
