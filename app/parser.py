@@ -535,7 +535,7 @@ async def _auto_offer_send(
         return
 
     try:
-        offer_text = await generate_offer_claude(
+        offer = await generate_offer_claude(
             title=title,
             description=desc,
             budget=budget_str,
@@ -544,23 +544,43 @@ async def _auto_offer_send(
             scope_unclear=score_result.get("scope_unclear", False),
             site_category=score_result.get("site_category", "not_site"),
             is_fast=price < 15000,
+            offers_count=offers_count,
+            buyer=", ".join(buyer_achievements_names) or "без медалей",
         )
     except Exception as exc:
         logger.warning("AutoOffer: генерация провалилась [%s]: %s", title[:50], exc)
         return
 
-    if not offer_text or len(offer_text) < 100:
-        logger.warning("AutoOffer: пустой/короткий текст [%s]", title[:50])
+    if not offer or not offer.get("text"):
+        logger.warning("AutoOffer: пустой ответ генератора [%s]", title[:50])
         return
+
+    offer_text = offer["text"]
+    # Цену и срок предлагает модель (узкая ниша — ближе к верху вилки,
+    # мясорубка — низ). Зажимаем в границы: потолок Kwork 3x от нижней
+    # границы бюджета, пол — чтобы случайно не уйти работать за 100 ₽.
+    try:
+        send_price = int(offer.get("price") or price)
+    except (TypeError, ValueError):
+        send_price = price
+    if price:
+        send_price = max(500, min(send_price, price * 3))
+    else:
+        send_price = max(500, send_price)
+    try:
+        send_days = int(offer.get("days") or duration_for(send_price))
+    except (TypeError, ValueError):
+        send_days = duration_for(send_price)
+    send_days = max(1, min(send_days, 30))
 
     ok, detail = await send_offer(
         config=config, project_id=kw_id, description=offer_text,
-        price=price, title=title,
+        price=send_price, title=title, days=send_days,
     )
     if ok:
-        register_sent(kw_id, title, price)
+        register_sent(kw_id, title, send_price)
         state = get_auto_state()
-        logger.info("AutoOfferSent [%s] за %s ₽", title[:50], price)
+        logger.info("AutoOfferSent [%s] за %s ₽", title[:50], send_price)
         await bot.send_message(
             chat_id=config.tg_group,
             message_thread_id=config.tg_topic_id,

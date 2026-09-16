@@ -136,7 +136,8 @@ def duration_for(price: int) -> int:
 
 
 async def send_offer(
-    config, project_id, description: str, price: int, title: str
+    config, project_id, description: str, price: int, title: str,
+    days: int | None = None,
 ) -> tuple[bool, str]:
     """Отправить отклик через веб-сессию Kwork.
 
@@ -192,7 +193,7 @@ async def send_offer(
         form.add_field("wantId", str(project_id))
         form.add_field("offerType", "custom")
         form.add_field("description", description)
-        form.add_field("kwork_duration", str(duration_for(price)))
+        form.add_field("kwork_duration", str(days or duration_for(price)))
         form.add_field("kwork_price", str(price))
         form.add_field("kwork_name", (title or "Разработка")[:60])
 
