@@ -518,6 +518,43 @@ async def _process_pending_rechecks(bot: Bot, config: Settings, kwork, token) ->
         await asyncio.sleep(random.choice([1, 2]))
 
 
+# Кредиты Anthropic: без них бот слепнет МОЛЧА — скоринг падает на каждом
+# заказе, всё уходит в ScoringErrorSilenced, в дайджесте нули, и выглядит это
+# как «просто нет заказов». В сентябре так была потеряна неделя (W36: 0
+# карточек) и два fullstack-заказа по 100-110к прошли мимо.
+_CREDITS_WARNED_AT = 0.0
+_CREDITS_WARN_INTERVAL_SEC = 6 * 3600   # не спамим: одно предупреждение в 6ч
+
+
+async def _warn_if_credits_out(bot: Bot, config: Settings, reason: str) -> None:
+    """Предупредить в Telegram, если Anthropic отказывает из-за баланса."""
+    global _CREDITS_WARNED_AT
+    low = (reason or "").lower()
+    if "credit balance" not in low and "insufficient" not in low:
+        return
+    now = datetime.now().timestamp()
+    if now - _CREDITS_WARNED_AT < _CREDITS_WARN_INTERVAL_SEC:
+        return
+    _CREDITS_WARNED_AT = now
+    logger.warning("CreditsOut: отправляю предупреждение в Telegram")
+    try:
+        await bot.send_message(
+            chat_id=config.tg_group,
+            message_thread_id=config.tg_topic_id,
+            text=(
+                "🔴 <b>Кончились кредиты Anthropic</b>\n\n"
+                "Скоринг не работает: заказы находятся, но не оцениваются — "
+                "значит карточки и автоотклики <b>не идут</b>, и это выглядит "
+                "как «сегодня пусто».\n\n"
+                "Пополнить: console.anthropic.com → Plans &amp; Billing\n"
+                "Пока не пополнено: /live покажет живые заказы без скоринга."
+            ),
+            disable_web_page_preview=True,
+        )
+    except Exception as exc:
+        logger.warning("CreditsOut: не смог отправить предупреждение: %s", exc)
+
+
 async def _auto_offer_send(
     bot: Bot, config: Settings, kw_project, title: str, desc: str,
     budget_str: str, price: int, score_result: dict,
@@ -887,6 +924,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
                 "ScoringErrorSilenced [%s]: %s",
                 title[:60], score_result.get("reason", ""),
             )
+            await _warn_if_credits_out(bot, config, score_result.get("reason", ""))
             await asyncio.sleep(random.choice([1, 2, 3]))
             continue
 
