@@ -16,7 +16,6 @@ from app.db.tables import FreelancePlatform, Project
 from app.farm_mode import is_farm_mode_active
 from app.auto_offer import (
     DAILY_LIMIT as AUTO_DAILY_LIMIT,
-    MIN_SCORE as AUTO_MIN_SCORE,
     can_send_today,
     duration_for,
     get_state as get_auto_state,
@@ -522,6 +521,7 @@ async def _process_pending_rechecks(bot: Bot, config: Settings, kwork, token) ->
 async def _auto_offer_send(
     bot: Bot, config: Settings, kw_project, title: str, desc: str,
     budget_str: str, price: int, score_result: dict,
+    offers_count: int = 0, buyer_achievements_names: list | None = None,
 ) -> None:
     """Сгенерировать и отправить отклик, затем отчитаться в Telegram.
 
@@ -545,7 +545,7 @@ async def _auto_offer_send(
             site_category=score_result.get("site_category", "not_site"),
             is_fast=price < 15000,
             offers_count=offers_count,
-            buyer=", ".join(buyer_achievements_names) or "без медалей",
+            buyer=", ".join(buyer_achievements_names or []) or "без медалей",
         )
     except Exception as exc:
         logger.warning("AutoOffer: генерация провалилась [%s]: %s", title[:50], exc)
@@ -1100,40 +1100,36 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         # George перестал откликаться вручную (за 3 недели 0 нажатий при 28
         # присланных карточках) — не от нехватки заказов, а от эмоциональной
         # цены отправки в тишину. Коннекты сгорали неиспользованными.
-        # Бот берёт первую часть воронки на себя; George включается только
-        # когда заказчик ответил в личку.
-        # Предохранители: стек-фильтр (жёстче скора — он спасает от истории,
-        # когда генератор выдумал экспертизу в 1С), порог скора, лимит в день.
-        if (
-            respond
-            and is_auto_enabled()
-            and config.anthropic_api_key
-            and score_result["score"] >= AUTO_MIN_SCORE
-        ):
+        #
+        # Правка 17.09 по данным: в нише George узких заказов НЕ СУЩЕСТВУЕТ.
+        # Замер 19 заказов его стека: медиана итоговых откликов 48, только
+        # 4 из 19 остались с <=20, средний прирост +41.8 («mini app магазин»
+        # 15→89, «AI-агент» 4→107, «бот PUBG» 4→75). Поэтому убраны фильтр
+        # по competition_tier и отдельный жёсткий порог скора: ждать тихий
+        # заказ = не откликаться никогда.
+        #
+        # Порог теперь общий с карточкой (respond), то есть адаптивный от
+        # остатка коннектов: много коннектов и мало дней — берём почти всё,
+        # мало коннектов при многих днях — только сильные совпадения.
+        # Ровно логика George: «вначале можно на большинство, где есть шанс,
+        # чем меньше остаток — тем вероятнее должен быть заказ».
+        # Единственный жёсткий предохранитель — стек-фильтр: он спасает от
+        # случая, когда генератор выдумал себе экспертизу в 1С:УТ.
+        if respond and is_auto_enabled() and config.anthropic_api_key:
             stack_ok, stack_why = is_my_stack(title, desc)
-            # Правка 16.09: не отправляем в «широкое мясо». Отклики у заказчика
-            # сортируются НОВЫЕ СВЕРХУ, а читает он их через день-два (данные
-            # George по его же переписке). За сутки широкая тема набирает
-            # +30 в среднем (замер: «интернет-магазин гаджетов» 5→127 за 23ч,
-            # «сайт-визитка на WP» 4→74 за 13ч) — наш отклик к моменту чтения
-            # лежит на дне списка, коннект сгорает впустую. Узкие остаются с
-            # 2-7 откликами сутки спустя («сбор компаний» 1→4, «IP-телефония»
-            # 1→7), там список короткий и позиция роли не играет.
-            # Задержка отправки не помогает: поток не иссякает, ждать нечего.
-            tier = score_result.get("competition_tier")
-            if tier == "wide":
-                logger.info(
-                    "AutoOfferSkip [%s]: широкое мясо — за сутки набежит толпа",
-                    title[:50],
-                )
-            elif not stack_ok:
+            if not stack_ok:
                 logger.info("AutoOfferSkip [%s]: %s", title[:50], stack_why)
             elif not can_send_today():
-                logger.info("AutoOfferSkip [%s]: дневной лимит исчерпан", title[:50])
+                logger.info(
+                    "AutoOfferSkip [%s]: дневной лимит %d исчерпан",
+                    title[:50], AUTO_DAILY_LIMIT,
+                )
+            elif quota["remaining"] <= 0:
+                logger.info("AutoOfferSkip [%s]: коннекты кончились", title[:50])
             else:
                 await _auto_offer_send(
                     bot, config, kw_project, title, desc, budget_str,
-                    price, score_result,
+                    price, score_result, offers_count, buyer_achievements_names,
                 )
 
         # Генерация черновика отклика временно отключена — user разбирает

@@ -46,7 +46,6 @@ from app.kwork_filter import (
 )
 from app.auto_offer import (
     DAILY_LIMIT as AUTO_DAILY_LIMIT,
-    MIN_SCORE as AUTO_MIN_SCORE,
     get_state as get_auto_state,
     set_auto,
 )
@@ -574,11 +573,11 @@ async def cmd_auto_on(message: Message):
     st = get_auto_state()
     await message.answer(
         "🤖 <b>Автоотклик ВКЛЮЧЁН</b>\n\n"
-        f"Условия отправки (все должны совпасть):\n"
-        f"• скор ≥ <b>{AUTO_MIN_SCORE}</b>\n"
+        f"Условия отправки:\n"
+        f"• заказ прошёл в GO — порог сам подстраивается под остаток коннектов\n"
         f"• заказ в моём стеке (Python/Node/боты/API/парсинг)\n"
         f"• не больше <b>{AUTO_DAILY_LIMIT}</b> в день (сегодня {st.get('sent_today', 0)})\n"
-        f"• цена = нижняя граница бюджета заказчика\n\n"
+        f"• цену и срок считает Opus по конкуренции и объёму\n\n"
         "После каждой отправки пришлю заказ, цену и полный текст.\n"
         "Выключить: /auto_off · история: /auto_status"
     )
@@ -602,7 +601,7 @@ async def cmd_auto_status(message: Message):
     lines = [
         f"🤖 Автоотклик: <b>{'ВКЛЮЧЁН' if on else 'выключен'}</b>",
         f"Сегодня отправлено: <b>{st.get('sent_today', 0)}/{AUTO_DAILY_LIMIT}</b>",
-        f"Порог скора: {AUTO_MIN_SCORE}",
+        f"Порог: общий с карточкой, адаптируется под остаток коннектов",
     ]
     log = st.get("log") or []
     if log:

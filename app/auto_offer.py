@@ -29,8 +29,11 @@ from kwork import Kwork
 logger = logging.getLogger(__name__)
 
 STATE_FILE = "auto_offer.json"
-DAILY_LIMIT = 2          # 30 коннектов в месяц = 1/день, 2 с запасом на выбор
-MIN_SCORE = 8            # планка выше обычной: George карточки не смотрит
+DAILY_LIMIT = 3          # 30 коннектов в месяц; потолок держит квота, не этот лимит
+# MIN_SCORE убран 17.09: порог теперь общий с карточкой и адаптируется
+# к остатку коннектов (см. quota_status). Отдельная жёсткая планка при
+# медиане 48 откликов в нише означала бы "не откликаться никогда".
+MIN_SCORE = 0
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
