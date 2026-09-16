@@ -4675,7 +4675,11 @@ async def generate_offer_claude(
                 max_tokens=2000,
                 messages=[{"role": "user", "content": prompt}],
             )
-            raw = message.content[0].text.strip()
+            # Opus возвращает первым блоком ThinkingBlock (у него нет .text),
+            # поэтому берём именно текстовый блок, а не content[0].
+            raw = "".join(
+                b.text for b in message.content if getattr(b, "type", "") == "text"
+            ).strip()
             if looks_like_refusal(raw):
                 logger.warning("Refusal [%s] attempt %d", title[:60], attempt + 1)
                 if attempt < max_retries:
