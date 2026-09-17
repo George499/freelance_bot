@@ -45,6 +45,9 @@ _STACK_OK = re.compile(
     r"\bnode\.?js\b|\bnest\w*|\btypescript\b|\breact\b|\bnext\.?js\b|"
     r"телеграм\w*[\s-]*бот|telegram[\s-]*bot|\bтг[\s-]*бот|бот\w*\s+для\s+телеграм|"
     r"mini[\s-]?app|мини[\s-]?прил\w+|"
+    # VK-боты: тот же Python/Node + VK API, ниша та же что телеграм.
+    r"vk\s*api|long\s*poll|вк[\s-]?бот|"
+    r"(?:чат[\s-]?)?бот\w*[\s\w,\-]{0,40}?(?:вконтакте|вк)|"
     r"\bapi\b|интеграц\w+|вебхук\w*|webhook|\bparser\b|парсер\w*|парсинг\w*|"
     r"postgres\w*|\bsql\b|баз[аыу]\s+данных|\bdocker\b|бэкенд|backend|"
     r"скрипт\w*\s+на\s+python|автоматизац\w+\s+на\s+python",
