@@ -43,11 +43,15 @@ UA = (
 _STACK_OK = re.compile(
     r"\bpython\b|\bпитон\b|\bfastapi\b|\bdjango\b|\bflask\b|\baiogram\b|"
     r"\bnode\.?js\b|\bnest\w*|\btypescript\b|\breact\b|\bnext\.?js\b|"
-    r"телеграм\w*[\s-]*бот|telegram[\s-]*bot|\bтг[\s-]*бот|бот\w*\s+для\s+телеграм|"
-    r"mini[\s-]?app|мини[\s-]?прил\w+|"
-    # VK-боты: тот же Python/Node + VK API, ниша та же что телеграм.
-    r"vk\s*api|long\s*poll|вк[\s-]?бот|"
-    r"(?:чат[\s-]?)?бот\w*[\s\w,\-]{0,40}?(?:вконтакте|вк)|"
+    # Правка 20.09: боты ловятся ОДНИМ широким паттерном вместо перечисления
+    # площадок. Прежние конструкции требовали, чтобы «бот» и «тг/телеграм»
+    # стояли рядом и в правильном порядке, из-за чего терялись реальные GO:
+    # «Создать бота автопродаж в тг» (скор 8, Haiku: «Telegram-бот класса A»)
+    # и «WhatsApp-бот с ИИ» — WhatsApp вообще не был в списке.
+    # Это безопасно: до стек-фильтра заказ уже прошёл hard-reject, no-code
+    # детектор и скоринг, а чёрный список ниже перебивает белый.
+    r"\bбот\w*|\bbot\b|чат[\s-]?бот\w*|"
+    r"mini[\s-]?app|мини[\s-]?прил\w+|vk\s*api|long\s*poll|"
     r"\bapi\b|интеграц\w+|вебхук\w*|webhook|\bparser\b|парсер\w*|парсинг\w*|"
     r"postgres\w*|\bsql\b|баз[аыу]\s+данных|\bdocker\b|бэкенд|backend|"
     r"скрипт\w*\s+на\s+python|автоматизац\w+\s+на\s+python|"
@@ -70,6 +74,12 @@ _STACK_BAD = re.compile(
     r"\bios\b|\bandroid\b|\bswift\b|\bkotlin\b|\bflutter\b|"
     r"консультац\w+|консультант\w*|обучени\w+|репетитор\w*|"
     r"настройк[аиуе]\s+(?:crm|срм|amocrm|bitrix|битрикс)|интегратор\s+\w*bitrix|"
+    # No-code конструкторы ботов. Их и так ловит detect_no_code_required до
+    # скоринга, но здесь последний рубеж перед отправкой от имени George —
+    # дублируем. n8n намеренно НЕ включён: там бывает наша работа
+    # («Развертывание шины n8n на Docker + Postgres» прошло как свой стек).
+    r"\bsalebot\b|сейлбот|\bmanychat\b|менichat|\bbothelp\b|\baimylogic\b|"
+    r"\bchatfuel\b|\bwazzup\b|\bтекстбэк\b|\btextback\b|"
     r"\bseo\b|\bсмм\b|\bsmm\b|таргет\w+|копирайт\w+|рерайт\w+|"
     r"\bunity\b|юнити|блендер|\bblender\b|\bphp\b|\blaravel\b",
     re.IGNORECASE,
