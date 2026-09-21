@@ -16,7 +16,12 @@ from app.db.tables import FreelancePlatform, Project
 from app.farm_mode import is_farm_mode_active
 from app.auto_offer import (
     DAILY_LIMIT as AUTO_DAILY_LIMIT,
-    can_send_now,
+    WINDOW_HOURS as AUTO_WINDOW_HOURS,
+    can_send_today,
+    enqueue,
+    queue_size,
+    take_best,
+    window_ready,
     duration_for,
     get_state as get_auto_state,
     is_auto_enabled,
@@ -555,6 +560,68 @@ async def _warn_if_credits_out(bot: Bot, config: Settings, reason: str) -> None:
         logger.warning("CreditsOut: не смог отправить предупреждение: %s", exc)
 
 
+def kw_id_from_url(url: str) -> str | None:
+    m = re.search(r"/projects/(\d+)", url or "")
+    return m.group(1) if m else None
+
+
+async def _process_offer_queue(bot: Bot, config: Settings, kwork, token) -> None:
+    """Закрыть окно накопления: отправить отклик ЛУЧШЕМУ кандидату.
+
+    Правка 21.09. Раньше отклик уходил первому подошедшему заказу, и лучший,
+    пришедший через час, оставался без коннекта (21.09: в 06:39 ушло на 7к,
+    в 09:39 появился агрегатор за 110к). Теперь кандидаты копятся 3 часа,
+    затем уходит один отклик лучшему по скору с надбавкой за бюджет.
+    """
+    if not (is_auto_enabled() and config.anthropic_api_key and window_ready()):
+        return
+    if not can_send_today():
+        logger.info("OfferQueue: окно готово, но дневной лимит исчерпан")
+        return
+
+    best, dropped = take_best()
+    if not best:
+        return
+    logger.info(
+        "OfferQueue: выбран [%s] скор %s, %s ₽ (отсеяно %d кандидатов)",
+        str(best.get("title"))[:50], best.get("score"), best.get("price"), dropped,
+    )
+
+    # За 3 часа заказ мог быть снят или уйти в глухую мясорубку — проверяем.
+    try:
+        resp = await kwork.api_request(
+            method="post", api_method="project", id=best["id"], token=token,
+        )
+        data = resp.get("response") if isinstance(resp, dict) else None
+    except Exception as exc:
+        logger.warning("OfferQueue: не проверил заказ [%s]: %s", best["id"], exc)
+        data = None
+    if data is not None and not data:
+        logger.info("OfferQueue: заказ %s снят — отклик не шлём", best["id"])
+        return
+    if data and data.get("status") != "active":
+        logger.info("OfferQueue: заказ %s уже не active — пропускаем", best["id"])
+        return
+
+    project = await Project.objects().where(Project.id == best["db_id"]).first()
+    if not project:
+        logger.warning("OfferQueue: заказ %s пропал из БД", best["id"])
+        return
+
+    score_result = {
+        "score": best.get("score", 0),
+        "is_ai": best.get("is_ai", False),
+        "scope_unclear": best.get("scope_unclear", False),
+        "site_category": best.get("site_category", "not_site"),
+    }
+    await _auto_offer_send(
+        bot, config, project, best.get("title", ""), best.get("desc", ""),
+        best.get("budget_str", ""), best.get("price", 0), score_result,
+        (data or {}).get("offers", best.get("offers", 0)),
+        [best["buyer"]] if best.get("buyer") else [],
+    )
+
+
 async def _auto_offer_send(
     bot: Bot, config: Settings, kw_project, title: str, desc: str,
     budget_str: str, price: int, score_result: dict,
@@ -661,6 +728,12 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         await _process_pending_rechecks(bot, config, kwork, token)
     except Exception as exc:
         logger.warning("pending rechecks failed: %s", exc)
+
+    # Окно накопления автоотклика: если 3 часа прошли — шлём лучшему.
+    try:
+        await _process_offer_queue(bot, config, kwork, token)
+    except Exception as exc:
+        logger.warning("offer queue failed: %s", exc)
 
     raw_projects = await kwork.api_request(
         method="post",
@@ -1155,17 +1228,32 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         # случая, когда генератор выдумал себе экспертизу в 1С:УТ.
         if respond and is_auto_enabled() and config.anthropic_api_key:
             stack_ok, stack_why = is_my_stack(title, desc)
-            slot_ok, slot_why = can_send_now(score_result["score"], price)
             if not stack_ok:
                 logger.info("AutoOfferSkip [%s]: %s", title[:50], stack_why)
             elif quota["remaining"] <= 0:
                 logger.info("AutoOfferSkip [%s]: коннекты кончились", title[:50])
-            elif not slot_ok:
-                logger.info("AutoOfferSkip [%s]: %s", title[:50], slot_why)
+            elif not can_send_today():
+                logger.info("AutoOfferSkip [%s]: дневной лимит исчерпан", title[:50])
             else:
-                await _auto_offer_send(
-                    bot, config, kw_project, title, desc, budget_str,
-                    price, score_result, offers_count, buyer_achievements_names,
+                # Не отправляем сразу: кандидат ждёт в окне, отклик уйдёт
+                # лучшему за период (см. _process_offer_queue).
+                n = enqueue({
+                    "id": kw_id_from_url(kw_project.url),
+                    "db_id": kw_project.id,
+                    "title": title,
+                    "desc": desc[:4000],
+                    "budget_str": budget_str,
+                    "price": price,
+                    "score": score_result["score"],
+                    "offers": offers_count,
+                    "buyer": ", ".join(buyer_achievements_names or []),
+                    "is_ai": score_result.get("is_ai", False),
+                    "scope_unclear": score_result.get("scope_unclear", False),
+                    "site_category": score_result.get("site_category", "not_site"),
+                })
+                logger.info(
+                    "AutoOfferQueued [%s]: скор %d, %d ₽ — в окне %d кандидат(ов)",
+                    title[:50], score_result["score"], price, n,
                 )
 
         # Генерация черновика отклика временно отключена — user разбирает

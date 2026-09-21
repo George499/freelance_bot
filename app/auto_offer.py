@@ -145,6 +145,73 @@ def can_send_today() -> bool:
     return get_state().get("sent_today", 0) < DAILY_LIMIT
 
 
+# === Окно накопления (правка 21.09, по решению George) ===
+# Бот отправлял отклик первому подошедшему заказу, а лучший приходил через
+# час: 21.09 в 06:39 ушёл отклик за 7к, а в 09:39 появился агрегатор за 110к.
+# Теперь кандидаты копятся WINDOW_HOURS, потом уходит отклик ЛУЧШЕМУ.
+# Цена окна известна и принята: заказы набирают 13-54 отклика в час, за три
+# часа очередь вырастет — но выбор заказа важнее места в списке, который всё
+# равно уезжает вниз (новые отклики сортируются сверху).
+WINDOW_HOURS = 3
+
+
+def _rank(c: dict) -> tuple:
+    """Чем лучше кандидат, тем больше. Скор плюс надбавка за бюджет.
+
+    Без надбавки заказ со скором 8 за 5к обошёл бы скор 7 за 110к — ровно
+    та потеря, на которую George указал.
+    """
+    price = c.get("price") or 0
+    bonus = 2 if price >= 50_000 else (1 if price >= 20_000 else 0)
+    return ((c.get("score") or 0) + bonus, price)
+
+
+def enqueue(candidate: dict) -> int:
+    """Положить кандидата в окно. Возвращает размер очереди."""
+    state = get_state()
+    queue = state.setdefault("queue", [])
+    if any(str(c.get("id")) == str(candidate.get("id")) for c in queue):
+        return len(queue)
+    candidate["added_at"] = datetime.now().isoformat(timespec="seconds")
+    queue.append(candidate)
+    _save(state)
+    return len(queue)
+
+
+def window_ready() -> bool:
+    """Пора ли закрывать окно: прошло WINDOW_HOURS с первого кандидата."""
+    state = get_state()
+    queue = state.get("queue") or []
+    if not queue:
+        return False
+    try:
+        oldest = min(datetime.fromisoformat(c["added_at"]) for c in queue)
+    except (KeyError, ValueError):
+        return True
+    return (datetime.now() - oldest).total_seconds() >= WINDOW_HOURS * 3600
+
+
+def take_best() -> tuple[dict | None, int]:
+    """Забрать лучшего кандидата и очистить окно.
+
+    Остальные не переносим: к закрытию окна им уже 3+ часа, в этой нише
+    это 40-150 откликов — соревноваться там не с чем.
+    """
+    state = get_state()
+    queue = state.get("queue") or []
+    if not queue:
+        return None, 0
+    best = max(queue, key=_rank)
+    dropped = len(queue) - 1
+    state["queue"] = []
+    _save(state)
+    return best, dropped
+
+
+def queue_size() -> int:
+    return len(get_state().get("queue") or [])
+
+
 def can_send_now(score: int, price: int) -> tuple[bool, str]:
     """Резерв по времени суток: не выгребать дневной лимит с утра.
 
