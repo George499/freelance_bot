@@ -615,7 +615,7 @@ async def _auto_offer_send(
         price=send_price, title=title, days=send_days,
     )
     if ok:
-        register_sent(kw_id, title, send_price)
+        register_sent(kw_id, title, send_price, offer_text)
         state = get_auto_state()
         logger.info("AutoOfferSent [%s] за %s ₽", title[:50], send_price)
         await bot.send_message(

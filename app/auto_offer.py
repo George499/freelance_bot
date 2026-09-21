@@ -179,12 +179,17 @@ def can_send_now(score: int, price: int) -> tuple[bool, str]:
     return True, ""
 
 
-def register_sent(project_id, title: str, price: int) -> dict:
+def register_sent(project_id, title: str, price: int, text: str = "") -> dict:
+    """Записать отправку. Текст сохраняем: Telegram Bot API не даёт боту
+    читать свою же историю, и без этого разобрать «почему нет ответов»
+    можно только попросив George переслать сообщение вручную.
+    """
     state = get_state()
     state["sent_today"] = state.get("sent_today", 0) + 1
     state.setdefault("log", []).insert(0, {
         "id": str(project_id), "title": title[:70],
         "price": price, "at": date.today().isoformat(),
+        "text": (text or "")[:900],
     })
     state["log"] = state["log"][:50]
     _save(state)
