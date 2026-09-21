@@ -30,6 +30,42 @@ MONTHLY_QUOTA = 30
 # поэтому генерим его сильной моделью. Скоринг остаётся на Haiku:
 # там сотни вызовов в день, здесь 1-2.
 OFFER_MODEL = "claude-opus-5"
+
+# Схема отклика для tool use: API сам гарантирует валидную структуру,
+# поэтому текст с кавычками и переносами больше не ломает разбор.
+OFFER_TOOL = {
+    "name": "submit_offer",
+    "description": "Готовый отклик на заказ Kwork плюс поля формы.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": "Текст отклика заказчику, 600-900 знаков.",
+            },
+            "price": {"type": "integer", "description": "Цена в рублях."},
+            "days": {"type": "integer", "description": "Срок в днях."},
+            "stages": {
+                "type": "array",
+                "description": "Этапы, пустой массив если оплата одной суммой.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "price": {"type": "integer"},
+                        "days": {"type": "integer"},
+                    },
+                    "required": ["name", "price", "days"],
+                },
+            },
+            "note": {
+                "type": "string",
+                "description": "Одна строка: на чём построен отклик.",
+            },
+        },
+        "required": ["text", "price", "days"],
+    },
+}
 MIN_SCORE_FOR_RESPONSE = 7
 DAILY_SOFT_LIMIT = 2
 RESERVE_QUOTA_FOR_LAST_DAYS = 7
@@ -4760,34 +4796,40 @@ async def generate_offer_claude(
     for attempt in range(max_retries + 1):
         try:
             client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
+            # Правка 21.09: структуру забираем через tool use, а не парсим JSON
+            # из текста. Модель писала отклик с кавычками и переносами внутри
+            # строки, JSON ломался, генератор возвращал None — и отклик не
+            # уходил вовсе. Поймано на живом заказе за 110к:
+            # «Expecting ',' delimiter: line 7 column 88». С tool use структуру
+            # валидирует сам API, экранирование больше не наша забота.
             message = await client.messages.create(
                 model=OFFER_MODEL,
                 max_tokens=2000,
                 messages=[{"role": "user", "content": prompt}],
+                tools=[OFFER_TOOL],
+                tool_choice={"type": "tool", "name": "submit_offer"},
             )
-            # Opus возвращает первым блоком ThinkingBlock (у него нет .text),
-            # поэтому берём именно текстовый блок, а не content[0].
-            raw = "".join(
-                b.text for b in message.content if getattr(b, "type", "") == "text"
-            ).strip()
-            if looks_like_refusal(raw):
-                logger.warning("Refusal [%s] attempt %d", title[:60], attempt + 1)
+            data = next(
+                (
+                    b.input for b in message.content
+                    if getattr(b, "type", "") == "tool_use"
+                ),
+                None,
+            )
+            if not data:
+                raw = "".join(
+                    b.text for b in message.content
+                    if getattr(b, "type", "") == "text"
+                ).strip()
+                if looks_like_refusal(raw):
+                    logger.warning("Refusal [%s] attempt %d", title[:60], attempt + 1)
+                else:
+                    logger.warning(
+                        "Offer: нет tool_use [%s]: %s", title[:50], raw[:120]
+                    )
                 if attempt < max_retries:
                     continue
                 return None
-
-            # модель иногда оборачивает JSON в ```json ... ```
-            body = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw).strip()
-            try:
-                data = json.loads(body)
-            except json.JSONDecodeError:
-                m = re.search(r"\{.*\}", body, re.S)
-                if not m:
-                    logger.warning("Offer: не JSON [%s]: %s", title[:50], body[:120])
-                    if attempt < max_retries:
-                        continue
-                    return None
-                data = json.loads(m.group(0))
 
             text = (data.get("text") or "").strip()
             if len(text) < 80:
