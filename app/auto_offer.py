@@ -21,7 +21,7 @@ import json
 import logging
 import os
 import re
-from datetime import date
+from datetime import date, datetime
 
 import aiohttp
 from kwork import Kwork
@@ -34,6 +34,12 @@ DAILY_LIMIT = 3          # 30 коннектов в месяц; потолок �
 # к остатку коннектов (см. quota_status). Отдельная жёсткая планка при
 # медиане 48 откликов в нише означала бы "не откликаться никогда".
 MIN_SCORE = 0
+
+# Границы слотов (UTC; МСК = +3) и планка «сильного» заказа для утра.
+MORNING_UNTIL_H = 9      # до 12:00 МСК — один отклик, и только сильный
+DAY_UNTIL_H = 14         # до 17:00 МСК — второй; третий бережём на вечер
+STRONG_SCORE = 8
+STRONG_PRICE = 30_000
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
@@ -137,6 +143,40 @@ def set_auto(enabled: bool) -> dict:
 
 def can_send_today() -> bool:
     return get_state().get("sent_today", 0) < DAILY_LIMIT
+
+
+def can_send_now(score: int, price: int) -> tuple[bool, str]:
+    """Резерв по времени суток: не выгребать дневной лимит с утра.
+
+    Правка 21.09. Наблюдение George подтвердилось логами: бот тратил все три
+    отклика до обеда, а вечерние заказы пропускались с «дневной лимит
+    исчерпан».
+      21.09: 06:39 (7к) → 09:00 (20к) → 09:39 (110к), и в 15:39 пропущен
+             «Поставить бота на сервер»
+      20.09: 11:10 (7к) → 11:30 (45к) → 12:39 (5к), и в 16:29 пропущен
+             «Проект по веб программированию»
+    Заказы идут весь день (пик в полдень и около 20:00 МСК), поэтому ранний
+    слот тратим только на явно сильный заказ, остальные бережём.
+
+    Время серверное (UTC), МСК = +3.
+    """
+    hour = datetime.now().hour
+    sent = get_state().get("sent_today", 0)
+    if sent >= DAILY_LIMIT:
+        return False, f"дневной лимит {DAILY_LIMIT} исчерпан"
+
+    if hour < MORNING_UNTIL_H:                      # до 12:00 МСК
+        if sent >= 1:
+            return False, "утренний резерв: до полудня не больше одного"
+        if score < STRONG_SCORE and price < STRONG_PRICE:
+            return False, (
+                f"утро: слишком слабый для раннего слота "
+                f"(скор {score} < {STRONG_SCORE} и {price} ₽ < {STRONG_PRICE} ₽)"
+            )
+    elif hour < DAY_UNTIL_H:                        # до 17:00 МСК
+        if sent >= 2:
+            return False, "дневной резерв: третий отклик оставляем на вечер"
+    return True, ""
 
 
 def register_sent(project_id, title: str, price: int) -> dict:

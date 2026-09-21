@@ -16,7 +16,7 @@ from app.db.tables import FreelancePlatform, Project
 from app.farm_mode import is_farm_mode_active
 from app.auto_offer import (
     DAILY_LIMIT as AUTO_DAILY_LIMIT,
-    can_send_today,
+    can_send_now,
     duration_for,
     get_state as get_auto_state,
     is_auto_enabled,
@@ -1155,15 +1155,13 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         # случая, когда генератор выдумал себе экспертизу в 1С:УТ.
         if respond and is_auto_enabled() and config.anthropic_api_key:
             stack_ok, stack_why = is_my_stack(title, desc)
+            slot_ok, slot_why = can_send_now(score_result["score"], price)
             if not stack_ok:
                 logger.info("AutoOfferSkip [%s]: %s", title[:50], stack_why)
-            elif not can_send_today():
-                logger.info(
-                    "AutoOfferSkip [%s]: дневной лимит %d исчерпан",
-                    title[:50], AUTO_DAILY_LIMIT,
-                )
             elif quota["remaining"] <= 0:
                 logger.info("AutoOfferSkip [%s]: коннекты кончились", title[:50])
+            elif not slot_ok:
+                logger.info("AutoOfferSkip [%s]: %s", title[:50], slot_why)
             else:
                 await _auto_offer_send(
                     bot, config, kw_project, title, desc, budget_str,
