@@ -18,6 +18,7 @@ from app.auto_offer import (
     DAILY_LIMIT as AUTO_DAILY_LIMIT,
     WINDOW_HOURS as AUTO_WINDOW_HOURS,
     can_send_today,
+    daily_budget,
     enqueue,
     queue_size,
     take_best,
@@ -575,8 +576,15 @@ async def _process_offer_queue(bot: Bot, config: Settings, kwork, token) -> None
     """
     if not (is_auto_enabled() and config.anthropic_api_key and window_ready()):
         return
-    if not can_send_today():
-        logger.info("OfferQueue: окно готово, но дневной лимит исчерпан")
+    quota_state = get_quota()
+    remaining = MONTHLY_QUOTA - quota_state["responses_used"]
+    days_left = get_days_until_refill()
+    if not can_send_today(remaining, days_left):
+        logger.info(
+            "OfferQueue: окно готово, но дневной бюджет %d исчерпан "
+            "(остаток %d на %d дн.)",
+            daily_budget(remaining, days_left), remaining, days_left,
+        )
         return
 
     best, dropped = take_best()
@@ -1232,8 +1240,14 @@ async def get_kwork_projects(bot: Bot, config: Settings):
                 logger.info("AutoOfferSkip [%s]: %s", title[:50], stack_why)
             elif quota["remaining"] <= 0:
                 logger.info("AutoOfferSkip [%s]: коннекты кончились", title[:50])
-            elif not can_send_today():
-                logger.info("AutoOfferSkip [%s]: дневной лимит исчерпан", title[:50])
+            elif not can_send_today(quota["remaining"], quota["days_left"]):
+                logger.info(
+                    "AutoOfferSkip [%s]: дневной бюджет %d исчерпан "
+                    "(остаток %d коннектов на %d дн.)",
+                    title[:50],
+                    daily_budget(quota["remaining"], quota["days_left"]),
+                    quota["remaining"], quota["days_left"],
+                )
             else:
                 # Не отправляем сразу: кандидат ждёт в окне, отклик уйдёт
                 # лучшему за период (см. _process_offer_queue).

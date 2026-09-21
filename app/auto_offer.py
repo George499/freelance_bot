@@ -141,8 +141,21 @@ def set_auto(enabled: bool) -> dict:
     return state
 
 
-def can_send_today() -> bool:
-    return get_state().get("sent_today", 0) < DAILY_LIMIT
+def daily_budget(remaining: int | None = None, days_left: int | None = None) -> int:
+    """Сколько откликов можно потратить сегодня, исходя из остатка квоты.
+
+    Плоские 3/день выбирали месячную квоту за десять дней. Считаем ровно:
+    остаток делить на дни до пополнения, округляя вверх, но не больше
+    DAILY_LIMIT. 22 коннекта на 20 дней → 2; 5 на 10 дней → 1.
+    """
+    if not remaining or not days_left:
+        return DAILY_LIMIT
+    per_day = -(-int(remaining) // max(int(days_left), 1))   # ceil
+    return max(1, min(per_day, DAILY_LIMIT))
+
+
+def can_send_today(remaining: int | None = None, days_left: int | None = None) -> bool:
+    return get_state().get("sent_today", 0) < daily_budget(remaining, days_left)
 
 
 # === Окно накопления (правка 21.09, по решению George) ===
@@ -152,7 +165,13 @@ def can_send_today() -> bool:
 # Цена окна известна и принята: заказы набирают 13-54 отклика в час, за три
 # часа очередь вырастет — но выбор заказа важнее места в списке, который всё
 # равно уезжает вниз (новые отклики сортируются сверху).
-WINDOW_HOURS = 3
+# Правка 21.09-bis (George): поздний вход — ПЛЮС, а не цена. Отклики у
+# заказчика сортируются новые сверху, значит зайти 80-м = стоять в начале
+# списка, который он открывает, а зайти 10-м = быть закопанным под всеми
+# последующими. Плюс квота всё равно ограничивает (22 коннекта на 20 дней
+# ≈ один в сутки), гнаться за тремя отправками в день незачем.
+# Поэтому окно длинное: больше выбор и позиция выше.
+WINDOW_HOURS = 8
 
 
 def _rank(c: dict) -> tuple:
