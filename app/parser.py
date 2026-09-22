@@ -16,13 +16,11 @@ from app.db.tables import FreelancePlatform, Project
 from app.farm_mode import is_farm_mode_active
 from app.auto_offer import (
     DAILY_LIMIT as AUTO_DAILY_LIMIT,
-    WINDOW_HOURS as AUTO_WINDOW_HOURS,
     can_send_today,
     daily_budget,
     enqueue,
-    queue_size,
+    slot_ready,
     take_best,
-    window_ready,
     duration_for,
     get_state as get_auto_state,
     is_auto_enabled,
@@ -567,35 +565,34 @@ def kw_id_from_url(url: str) -> str | None:
 
 
 async def _process_offer_queue(bot: Bot, config: Settings, kwork, token) -> None:
-    """Закрыть окно накопления: отправить отклик ЛУЧШЕМУ кандидату.
+    """Вечерний слот: отправить отклик ЛУЧШЕМУ кандидату за день.
 
-    Правка 21.09. Раньше отклик уходил первому подошедшему заказу, и лучший,
-    пришедший через час, оставался без коннекта (21.09: в 06:39 ушло на 7к,
-    в 09:39 появился агрегатор за 110к). Теперь кандидаты копятся 3 часа,
-    затем уходит один отклик лучшему по скору с надбавкой за бюджет.
+    Правка 22.09. Кандидаты копятся весь день, в 20:00 МСК уходит отклик
+    лучшему по скору с надбавкой за бюджет, на следующем проходе (10 мин) —
+    второму, пока не кончится дневной бюджет от остатка коннектов.
     """
-    if not (is_auto_enabled() and config.anthropic_api_key and window_ready()):
+    if not (is_auto_enabled() and config.anthropic_api_key and slot_ready()):
         return
     quota_state = get_quota()
     remaining = MONTHLY_QUOTA - quota_state["responses_used"]
     days_left = get_days_until_refill()
     if not can_send_today(remaining, days_left):
         logger.info(
-            "OfferQueue: окно готово, но дневной бюджет %d исчерпан "
+            "OfferQueue: слот открыт, но дневной бюджет %d исчерпан "
             "(остаток %d на %d дн.)",
             daily_budget(remaining, days_left), remaining, days_left,
         )
         return
 
-    best, dropped = take_best()
+    best, left = take_best()
     if not best:
         return
     logger.info(
-        "OfferQueue: выбран [%s] скор %s, %s ₽ (отсеяно %d кандидатов)",
-        str(best.get("title"))[:50], best.get("score"), best.get("price"), dropped,
+        "OfferQueue: выбран [%s] скор %s, %s ₽ (в очереди осталось %d)",
+        str(best.get("title"))[:50], best.get("score"), best.get("price"), left,
     )
 
-    # За 3 часа заказ мог быть снят или уйти в глухую мясорубку — проверяем.
+    # За день заказ мог быть снят или уйти в глухую мясорубку — проверяем.
     try:
         resp = await kwork.api_request(
             method="post", api_method="project", id=best["id"], token=token,
