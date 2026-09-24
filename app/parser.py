@@ -19,7 +19,7 @@ from app.auto_offer import (
     can_send_today,
     daily_budget,
     enqueue,
-    slot_ready,
+    ready_lane,
     take_best,
     duration_for,
     get_state as get_auto_state,
@@ -565,66 +565,80 @@ def kw_id_from_url(url: str) -> str | None:
 
 
 async def _process_offer_queue(bot: Bot, config: Settings, kwork, token) -> None:
-    """Вечерний слот: отправить отклик ЛУЧШЕМУ кандидату за день.
+    """Отправить отклик лучшему кандидату из очереди.
 
-    Правка 22.09. Кандидаты копятся весь день, в 21:00 МСК уходит отклик
-    лучшему по скору с надбавкой за бюджет, на следующем проходе (10 мин) —
-    второму, пока не кончится дневной бюджет от остатка коннектов.
+    Две очереди (правки 22.09 и 24.09). Сильный заказ (скор от 8 и бюджет
+    от 50 000 ₽) уходит через час после находки: крупные закрываются днём
+    и до вечера не доживают. Остальные ждут вечернего слота 21:00 МСК.
+    Один отклик за проход (10 мин), пока не кончится дневной бюджет от
+    остатка коннектов.
     """
-    if not (is_auto_enabled() and config.anthropic_api_key and slot_ready()):
+    if not (is_auto_enabled() and config.anthropic_api_key):
+        return
+    lane = ready_lane()
+    if not lane:
         return
     quota_state = get_quota()
     remaining = MONTHLY_QUOTA - quota_state["responses_used"]
     days_left = get_days_until_refill()
     if not can_send_today(remaining, days_left):
         logger.info(
-            "OfferQueue: слот открыт, но дневной бюджет %d исчерпан "
+            "OfferQueue[%s]: есть кандидат, но дневной бюджет %d исчерпан "
             "(остаток %d на %d дн.)",
-            daily_budget(remaining, days_left), remaining, days_left,
+            lane, daily_budget(remaining, days_left), remaining, days_left,
         )
         return
 
-    best, left = take_best()
-    if not best:
-        return
-    logger.info(
-        "OfferQueue: выбран [%s] скор %s, %s ₽ (в очереди осталось %d)",
-        str(best.get("title"))[:50], best.get("score"), best.get("price"), left,
-    )
-
-    # За день заказ мог быть снят или уйти в глухую мясорубку — проверяем.
-    try:
-        resp = await kwork.api_request(
-            method="post", api_method="project", id=best["id"], token=token,
+    # Закрытый заказ пропускаем в ТОМ ЖЕ проходе и берём следующего:
+    # 24.09 к вечеру были закрыты четыре кандидата из шести, и каждый
+    # съедал бы по 10 минут до следующего прохода.
+    for _ in range(5):
+        best, left = take_best(strong_only=(lane == "fast"))
+        if not best:
+            return
+        logger.info(
+            "OfferQueue[%s]: выбран [%s] скор %s, %s ₽ (в очереди осталось %d)",
+            lane, str(best.get("title"))[:50], best.get("score"),
+            best.get("price"), left,
         )
-        data = resp.get("response") if isinstance(resp, dict) else None
-    except Exception as exc:
-        logger.warning("OfferQueue: не проверил заказ [%s]: %s", best["id"], exc)
-        data = None
-    if data is not None and not data:
-        logger.info("OfferQueue: заказ %s снят — отклик не шлём", best["id"])
-        return
-    if data and data.get("status") != "active":
-        logger.info("OfferQueue: заказ %s уже не active — пропускаем", best["id"])
-        return
 
-    project = await Project.objects().where(Project.id == best["db_id"]).first()
-    if not project:
-        logger.warning("OfferQueue: заказ %s пропал из БД", best["id"])
-        return
+        # Пока кандидат ждал в очереди, заказ могли закрыть — проверяем.
+        try:
+            resp = await kwork.api_request(
+                method="post", api_method="project", id=best["id"], token=token,
+            )
+            data = resp.get("response") if isinstance(resp, dict) else None
+        except Exception as exc:
+            logger.warning("OfferQueue: не проверил заказ [%s]: %s", best["id"], exc)
+            data = None
+        if data is not None and not data:
+            logger.info("OfferQueue: заказ %s снят — берём следующего", best["id"])
+            continue
+        if data and data.get("status") != "active":
+            logger.info(
+                "OfferQueue: заказ %s уже не active (%s) — берём следующего",
+                best["id"], data.get("status"),
+            )
+            continue
 
-    score_result = {
-        "score": best.get("score", 0),
-        "is_ai": best.get("is_ai", False),
-        "scope_unclear": best.get("scope_unclear", False),
-        "site_category": best.get("site_category", "not_site"),
-    }
-    await _auto_offer_send(
-        bot, config, project, best.get("title", ""), best.get("desc", ""),
-        best.get("budget_str", ""), best.get("price", 0), score_result,
-        (data or {}).get("offers", best.get("offers", 0)),
-        [best["buyer"]] if best.get("buyer") else [],
-    )
+        project = await Project.objects().where(Project.id == best["db_id"]).first()
+        if not project:
+            logger.warning("OfferQueue: заказ %s пропал из БД", best["id"])
+            continue
+
+        score_result = {
+            "score": best.get("score", 0),
+            "is_ai": best.get("is_ai", False),
+            "scope_unclear": best.get("scope_unclear", False),
+            "site_category": best.get("site_category", "not_site"),
+        }
+        await _auto_offer_send(
+            bot, config, project, best.get("title", ""), best.get("desc", ""),
+            best.get("budget_str", ""), best.get("price", 0), score_result,
+            (data or {}).get("offers", best.get("offers", 0)),
+            [best["buyer"]] if best.get("buyer") else [],
+        )
+        return
 
 
 async def _auto_offer_send(

@@ -191,6 +191,20 @@ def can_send_today(remaining: int | None = None, days_left: int | None = None) -
 SEND_HOUR_UTC = 18       # 21:00 МСК — время выбрал George
 STALE_HOURS = 24
 
+# === Быстрая очередь (правка 24.09, по решению George) ===
+# Вечерний слот выбирал только из доживших заказов, а крупные не доживают.
+# 24.09 из шести кандидатов к 21:00 закрылись четыре, включая оба крупных:
+# «Разработка сайта с нуля» (150к) набрала 43 отклика за полтора часа и
+# закрылась до 14:00, «Fullstack-разработка веб-сервиса» (200к) в 13:18 была
+# жива, к вечеру удалена. Слоту достались 4к и 3к.
+# Поэтому сильный заказ уходит через FAST_DELAY_MIN после находки (час —
+# чтобы заметить, если следом придёт ещё лучше), остальные ждут вечера.
+# Ранний отклик к вечеру окажется ниже в списке, но это лучше, чем отклик
+# на удалённый заказ.
+STRONG_SCORE = 8
+STRONG_PRICE = 50_000
+FAST_DELAY_MIN = 60
+
 
 def _rank(c: dict) -> tuple:
     """Чем лучше кандидат, тем больше. Скор плюс надбавка за бюджет.
@@ -215,40 +229,57 @@ def enqueue(candidate: dict) -> int:
     return len(queue)
 
 
-def slot_ready() -> bool:
-    """Открыт ли вечерний слот и есть ли кого отправлять.
-
-    Время серверное (UTC), МСК = +3. Слот держится открытым до полуночи
-    UTC: если дневной бюджет не выбран за первые проходы, остаток уйдёт
-    на вечерние заказы, а не пропадёт.
-    """
-    if not (get_state().get("queue") or []):
-        return False
-    return datetime.now().hour >= SEND_HOUR_UTC
-
-
-def _is_stale(candidate: dict) -> bool:
+def _age_sec(candidate: dict) -> float:
     try:
         added = datetime.fromisoformat(candidate["added_at"])
     except (KeyError, ValueError):
-        return True
-    return (datetime.now() - added).total_seconds() > STALE_HOURS * 3600
+        return float("inf")
+    return (datetime.now() - added).total_seconds()
 
 
-def take_best() -> tuple[dict | None, int]:
+def _is_stale(candidate: dict) -> bool:
+    return _age_sec(candidate) > STALE_HOURS * 3600
+
+
+def _is_strong(candidate: dict) -> bool:
+    return ((candidate.get("score") or 0) >= STRONG_SCORE
+            and (candidate.get("price") or 0) >= STRONG_PRICE)
+
+
+def ready_lane() -> str | None:
+    """Какая очередь готова отправлять: "evening", "fast" или None.
+
+    Вечерний слот открыт с SEND_HOUR_UTC до полуночи UTC и берёт лучшего
+    из всех: если бюджет не выбран за первые проходы, остаток уйдёт на
+    вечерние заказы, а не пропадёт. Днём работает только быстрая очередь:
+    срабатывает, когда сильный кандидат пролежал FAST_DELAY_MIN.
+    Время серверное (UTC), МСК = +3.
+    """
+    fresh = [c for c in (get_state().get("queue") or []) if not _is_stale(c)]
+    if not fresh:
+        return None
+    if datetime.now().hour >= SEND_HOUR_UTC:
+        return "evening"
+    if any(_is_strong(c) and _age_sec(c) >= FAST_DELAY_MIN * 60 for c in fresh):
+        return "fast"
+    return None
+
+
+def take_best(strong_only: bool = False) -> tuple[dict | None, int]:
     """Забрать лучшего кандидата. Возвращает (кандидат, осталось в очереди).
 
-    Остальные НЕ выбрасываем: если дневной бюджет позволяет, следующий
-    проход парсера отправит второму. Возраст заказа нам не мешает — наш
-    отклик в любом случае новый и встанет сверху.
+    strong_only — для быстрой очереди: выбор только среди сильных, слабые
+    остаются ждать вечера. Остальных НЕ выбрасываем: если дневной бюджет
+    позволяет, следующий проход парсера отправит второму.
     """
     state = get_state()
     fresh = [c for c in (state.get("queue") or []) if not _is_stale(c)]
-    if not fresh:
-        state["queue"] = []
+    pool = [c for c in fresh if _is_strong(c)] if strong_only else fresh
+    if not pool:
+        state["queue"] = fresh
         _save(state)
-        return None, 0
-    best = max(fresh, key=_rank)
+        return None, len(fresh)
+    best = max(pool, key=_rank)
     state["queue"] = [
         c for c in fresh if str(c.get("id")) != str(best.get("id"))
     ]
