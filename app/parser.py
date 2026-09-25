@@ -1251,17 +1251,16 @@ async def get_kwork_projects(bot: Bot, config: Settings):
                 logger.info("AutoOfferSkip [%s]: %s", title[:50], stack_why)
             elif quota["remaining"] <= 0:
                 logger.info("AutoOfferSkip [%s]: коннекты кончились", title[:50])
-            elif not can_send_today(quota["remaining"], quota["days_left"]):
-                logger.info(
-                    "AutoOfferSkip [%s]: дневной бюджет %d исчерпан "
-                    "(остаток %d коннектов на %d дн.)",
-                    title[:50],
-                    daily_budget(quota["remaining"], quota["days_left"]),
-                    quota["remaining"], quota["days_left"],
-                )
             else:
-                # Не отправляем сразу: кандидат ждёт в окне, отклик уйдёт
-                # лучшему за период (см. _process_offer_queue).
+                # Не отправляем сразу: кандидат ждёт в очереди, отклик уйдёт
+                # лучшему (см. _process_offer_queue).
+                # Правка 25.09: в очередь ставим, даже если дневной лимит уже
+                # выбран. Раньше такой заказ выбрасывался: так пропал бы
+                # «AI-агент в TG», найденный 24.09 в 23:56 после двух вечерних
+                # откликов, а вечер - пик заказов. Теперь кандидат ждёт нового
+                # дня: сильный уйдёт быстрой очередью, остальные в 21:00.
+                # Очередь держит его сутки и перед отправкой проверяет, открыт
+                # ли ещё заказ.
                 n = enqueue({
                     "id": kw_id_from_url(kw_project.url),
                     "db_id": kw_project.id,
@@ -1276,9 +1275,12 @@ async def get_kwork_projects(bot: Bot, config: Settings):
                     "scope_unclear": score_result.get("scope_unclear", False),
                     "site_category": score_result.get("site_category", "not_site"),
                 })
+                waits = "" if can_send_today(
+                    quota["remaining"], quota["days_left"]
+                ) else ", лимит на сегодня выбран - ждёт нового дня"
                 logger.info(
-                    "AutoOfferQueued [%s]: скор %d, %d ₽ — в окне %d кандидат(ов)",
-                    title[:50], score_result["score"], price, n,
+                    "AutoOfferQueued [%s]: скор %d, %d ₽ — в окне %d кандидат(ов)%s",
+                    title[:50], score_result["score"], price, n, waits,
                 )
 
         # Генерация черновика отклика временно отключена — user разбирает
