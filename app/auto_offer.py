@@ -153,6 +153,7 @@ def get_state() -> dict:
     if state.get("date") != today:
         state["date"] = today
         state["sent_today"] = 0
+        state["small_today"] = 0
         _save(state)
     return state
 
@@ -214,6 +215,24 @@ STALE_HOURS = 24
 STRONG_SCORE = 8
 STRONG_PRICE = 50_000
 FAST_DELAY_MIN = 60
+
+# === Мелкая очередь (правка 02.10, по решению George) ===
+# 19 автооткликов 17-30.09 - ноль ответов: медиана 70 конкурентов на заказ,
+# а у George два отзыва, в толпе выбирают не его. Отзывы набираются на
+# мелких заказах, пока на них мало откликов, поэтому туда отклик уходит
+# сразу, без ожидания слота. Не больше SMALL_PER_DAY в день, чтобы мелочь не
+# съедала коннекты крупных. Цена не выше бюджета заказа: цель - отзыв.
+SMALL_PRICE = 10_000
+SMALL_MAX_OFFERS = 10
+SMALL_PER_DAY = 1
+
+
+def is_small_fresh(price: int | None, offers: int | None) -> bool:
+    return 0 < (price or 0) <= SMALL_PRICE and (offers or 0) < SMALL_MAX_OFFERS
+
+
+def small_lane_open() -> bool:
+    return get_state().get("small_today", 0) < SMALL_PER_DAY
 
 
 def _rank(c: dict) -> tuple:
@@ -301,17 +320,20 @@ def queue_size() -> int:
     return len(get_state().get("queue") or [])
 
 
-def register_sent(project_id, title: str, price: int, text: str = "") -> dict:
+def register_sent(project_id, title: str, price: int, text: str = "",
+                  lane: str = "") -> dict:
     """Записать отправку. Текст сохраняем: Telegram Bot API не даёт боту
     читать свою же историю, и без этого разобрать «почему нет ответов»
     можно только попросив George переслать сообщение вручную.
     """
     state = get_state()
     state["sent_today"] = state.get("sent_today", 0) + 1
+    if lane == "small":
+        state["small_today"] = state.get("small_today", 0) + 1
     state.setdefault("log", []).insert(0, {
         "id": str(project_id), "title": title[:70],
         "price": price, "at": date.today().isoformat(),
-        "text": (text or "")[:900],
+        "text": (text or "")[:900], "lane": lane,
     })
     state["log"] = state["log"][:50]
     _save(state)

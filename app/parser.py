@@ -15,7 +15,6 @@ from app.config_reader import Settings
 from app.db.tables import FreelancePlatform, Project
 from app.farm_mode import is_farm_mode_active
 from app.auto_offer import (
-    DAILY_LIMIT as AUTO_DAILY_LIMIT,
     can_send_today,
     daily_budget,
     enqueue,
@@ -25,8 +24,10 @@ from app.auto_offer import (
     get_state as get_auto_state,
     is_auto_enabled,
     is_my_stack,
+    is_small_fresh,
     register_sent,
     send_offer,
+    small_lane_open,
 )
 from app.pause_mode import is_bot_paused
 from app.kwork_filter import (
@@ -650,19 +651,30 @@ async def _process_offer_queue(bot: Bot, config: Settings, kwork, token) -> None
             best.get("budget_str", ""), best.get("price", 0), score_result,
             (data or {}).get("offers", best.get("offers", 0)),
             [best["buyer"]] if best.get("buyer") else [],
+            lane=lane,
         )
         return
+
+
+_LANE_LABEL = {
+    "small": "мелкий свежий заказ, отклик сразу",
+    "fast": "крупный заказ, быстрая очередь",
+    "evening": "вечерний слот",
+}
 
 
 async def _auto_offer_send(
     bot: Bot, config: Settings, kw_project, title: str, desc: str,
     budget_str: str, price: int, score_result: dict,
     offers_count: int = 0, buyer_achievements_names: list | None = None,
+    lane: str = "",
 ) -> None:
     """Сгенерировать и отправить отклик, затем отчитаться в Telegram.
 
     Отчёт обязателен: George должен видеть каждое слово, ушедшее от его
-    имени, иначе автомату нельзя доверять.
+    имени, иначе автомату нельзя доверять. С 02.10 карточки заказов при
+    включённом автоотклике не шлются, так что отчёт - единственное, что
+    George видит о заказе: в нём ссылка, бюджет, конкуренция и очередь.
     """
     m = re.search(r"/projects/(\d+)", kw_project.url or "")
     kw_id = m.group(1) if m else None
@@ -701,6 +713,9 @@ async def _auto_offer_send(
         send_price = price
     if price:
         send_price = max(500, min(send_price, price * 3))
+        if lane == "small":
+            # мелкая очередь - ради отзыва: не дороже бюджета заказчика
+            send_price = max(500, min(send_price, price))
     else:
         send_price = max(500, send_price)
     try:
@@ -714,30 +729,38 @@ async def _auto_offer_send(
         price=send_price, title=title, days=send_days,
     )
     if ok:
-        register_sent(kw_id, title, send_price, offer_text)
+        register_sent(kw_id, title, send_price, offer_text, lane=lane)
         state = get_auto_state()
-        logger.info("AutoOfferSent [%s] за %s ₽", title[:50], send_price)
+        logger.info("AutoOfferSent [%s] за %s ₽ (%s)", title[:50], send_price, lane)
+        # Правка 02.10: раньше в строке «Цена» стоял бюджет заказа, а не цена
+        # отклика, и лимит был константой 3 вместо реального бюджета дня.
+        remaining = MONTHLY_QUOTA - get_quota()["responses_used"]
+        day_budget = daily_budget(remaining, get_days_until_refill())
+        url = kw_project.url or f"https://kwork.ru/projects/{kw_id}"
         await bot.send_message(
             chat_id=config.tg_group,
             message_thread_id=config.tg_topic_id,
             text=(
-                f"🤖 <b>Отклик отправлен автоматически</b>\n"
-                f"{html.quote(title[:70])}\n"
-                f"Цена: <b>{price} ₽</b> · срок {duration_for(price)} дн. · "
-                f"сегодня {state.get('sent_today')}/{AUTO_DAILY_LIMIT}\n\n"
+                f"🤖 <b>Отклик отправлен</b> · {_LANE_LABEL.get(lane, 'автоотклик')}\n"
+                f'<a href="{url}">{html.quote(title[:70])}</a>\n'
+                f"Бюджет заказа: {price} ₽ · откликов было: {offers_count}\n"
+                f"Наш отклик: <b>{send_price} ₽</b>, срок {send_days} дн. · "
+                f"сегодня {state.get('sent_today')}/{day_budget}\n\n"
                 f"<i>Текст, ушедший заказчику:</i>\n{html.quote(offer_text)}"
             ),
             disable_web_page_preview=True,
         )
     else:
         logger.warning("AutoOfferFail [%s]: %s", title[:50], detail)
+        url = kw_project.url or f"https://kwork.ru/projects/{kw_id}"
         await bot.send_message(
             chat_id=config.tg_group,
             message_thread_id=config.tg_topic_id,
             text=(
-                f"⚠️ Автоотклик не ушёл: {html.quote(title[:60])}\n"
+                f'⚠️ Автоотклик не ушёл: <a href="{url}">{html.quote(title[:60])}</a>\n'
                 f"Причина: {html.quote(detail[:200])}"
             ),
+            disable_web_page_preview=True,
         )
 
 
@@ -1229,23 +1252,30 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             # v4 волна 1.5 рег.3: инкремент дневного счётчика borderline.
             increment_borderline()
 
-        sent = await bot.send_message(
-            chat_id=config.tg_group,
-            text=text,
-            message_thread_id=config.tg_topic_id,
-            reply_markup=keyboard,
-        )
+        # Правка 02.10 (George): «не нужно присылать карточки, раз бот сам
+        # проверяет - слать только когда отклик отправлен». Пока автоотклик
+        # включён, карточек нет, о заказе George узнаёт из отчёта об отклике.
+        # Выключит автоотклик (/auto_off) - карточки вернутся сами, иначе он
+        # остался бы вообще без сигнала. Замеры динамики нужны только для
+        # правки карточек, поэтому без карточки их тоже не ставим.
+        if not is_auto_enabled():
+            sent = await bot.send_message(
+                chat_id=config.tg_group,
+                text=text,
+                message_thread_id=config.tg_topic_id,
+                reply_markup=keyboard,
+            )
 
-        # Волна 5c: заказ показан → ставим на авто-замер динамики откликов.
-        # Первый замер через RECHECK_SCHEDULE_MIN[0] минут от находки.
-        # message_id + текст карточки — чтобы дописывать динамику через edit (1.6).
-        kw_project.tg_message_id = sent.message_id
-        kw_project.card_text = text
-        kw_project.recheck_done = 0
-        kw_project.next_recheck_at = int(
-            kw_project.first_seen_at.timestamp()
-        ) + RECHECK_SCHEDULE_MIN[0] * 60
-        await kw_project.save()
+            # Волна 5c: заказ показан → ставим на авто-замер динамики откликов.
+            # Первый замер через RECHECK_SCHEDULE_MIN[0] минут от находки.
+            # message_id + текст карточки — чтобы дописывать динамику через edit (1.6).
+            kw_project.tg_message_id = sent.message_id
+            kw_project.card_text = text
+            kw_project.recheck_done = 0
+            kw_project.next_recheck_at = int(
+                kw_project.first_seen_at.timestamp()
+            ) + RECHECK_SCHEDULE_MIN[0] * 60
+            await kw_project.save()
 
         # === Сентябрь 2026: автоотклик ===
         # George перестал откликаться вручную (за 3 недели 0 нажатий при 28
@@ -1276,10 +1306,24 @@ async def get_kwork_projects(bot: Bot, config: Settings):
                 # Правка 02.10: коннект на заказчика, который разместил 3+
                 # заказа и никого не нанял, - выброшенный коннект. Из 19
                 # автооткликов 17.09-30.09 четыре ушли таким (3-8 заказов,
-                # 0 наймов). Карточка George всё равно приходит.
+                # 0 наймов).
                 logger.info(
                     "AutoOfferSkip [%s]: заказчик не нанимает (%d заказов, 0%%)",
                     title[:50], user_projects_count,
+                )
+            elif (is_small_fresh(price, offers_count) and small_lane_open()
+                  and can_send_today(quota["remaining"], quota["days_left"])):
+                # Мелкая очередь (02.10): мелкий заказ, пока на нём меньше 10
+                # откликов, - отклик сразу, ради отзыва. Границы и дневной
+                # лимит - auto_offer.SMALL_*.
+                logger.info(
+                    "SmallFresh [%s]: %d ₽, %d откликов — отклик сразу",
+                    title[:50], price, offers_count,
+                )
+                await _auto_offer_send(
+                    bot, config, kw_project, title, desc, budget_str, price,
+                    score_result, offers_count, buyer_achievements_names,
+                    lane="small",
                 )
             else:
                 # Не отправляем сразу: кандидат ждёт в очереди, отклик уйдёт
