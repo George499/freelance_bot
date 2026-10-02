@@ -529,6 +529,19 @@ async def _process_pending_rechecks(bot: Bot, config: Settings, kwork, token) ->
 _CREDITS_WARNED_AT = 0.0
 _CREDITS_WARN_INTERVAL_SEC = 6 * 3600   # не спамим: одно предупреждение в 6ч
 
+# Сбои, после которых заказ стоит оценить заново, а не терять: кончились
+# кредиты, Anthropic перегружен, сеть. Ошибки по содержанию заказа сюда не
+# входят - их повтор каждые 10 минут только жёг бы деньги.
+_RETRYABLE_SCORING = (
+    "credit balance", "insufficient", "overloaded", "rate limit",
+    "rate_limit", "timeout", "timed out", "connection",
+)
+
+
+def _is_transient_scoring_error(reason: str) -> bool:
+    low = (reason or "").lower()
+    return any(s in low for s in _RETRYABLE_SCORING)
+
 
 async def _warn_if_credits_out(bot: Bot, config: Settings, reason: str) -> None:
     """Предупредить в Telegram, если Anthropic отказывает из-за баланса."""
@@ -957,7 +970,11 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         time_left = project.get("time_left") or 0
         deadline_str = f"{time_left // 86400} дней" if time_left else "не указан"
 
-        hired_percent = project.get("hired_percent")
+        # Правка 02.10: в ленте поле называется user_hired_percent. Читали
+        # hired_percent и всегда получали None, поэтому штраф скоринга за
+        # заказчиков без найма (-4 при 5+ заказах и 0%) не срабатывал ни разу:
+        # автоотклики уходили людям с 8 заказами и нулём наймов.
+        hired_percent = project.get("user_hired_percent", project.get("hired_percent"))
         buyer_achievements_count = project.get("buyer_achievements_count", 0)
         buyer_achievements_names = project.get("buyer_achievements_names", [])
         user_projects_count = project.get("user_projects_count", 0)
@@ -1012,11 +1029,15 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         # Anthropic упал / другая ошибка скоринга — молчим, не шумим в группу.
         if score_result.get("scoring_error"):
             stats["low_score_silenced"] += 1
-            logger.warning(
-                "ScoringErrorSilenced [%s]: %s",
-                title[:60], score_result.get("reason", ""),
-            )
-            await _warn_if_credits_out(bot, config, score_result.get("reason", ""))
+            reason = score_result.get("reason", "")
+            logger.warning("ScoringErrorSilenced [%s]: %s", title[:60], reason)
+            await _warn_if_credits_out(bot, config, reason)
+            # Правка 02.10: при сбое Anthropic забываем заказ, чтобы следующий
+            # прогон оценил его заново. Запись создаётся до скоринга, и раньше
+            # заказ оставался «виденным» и пропадал насовсем: 01-02.10 за сутки
+            # без кредитов так ушли 17 заказов.
+            if _is_transient_scoring_error(reason):
+                await Project.delete().where(Project.id == kw_project.id)
             await asyncio.sleep(random.choice([1, 2, 3]))
             continue
 
@@ -1251,6 +1272,15 @@ async def get_kwork_projects(bot: Bot, config: Settings):
                 logger.info("AutoOfferSkip [%s]: %s", title[:50], stack_why)
             elif quota["remaining"] <= 0:
                 logger.info("AutoOfferSkip [%s]: коннекты кончились", title[:50])
+            elif (user_projects_count or 0) >= 3 and hired_percent == 0:
+                # Правка 02.10: коннект на заказчика, который разместил 3+
+                # заказа и никого не нанял, - выброшенный коннект. Из 19
+                # автооткликов 17.09-30.09 четыре ушли таким (3-8 заказов,
+                # 0 наймов). Карточка George всё равно приходит.
+                logger.info(
+                    "AutoOfferSkip [%s]: заказчик не нанимает (%d заказов, 0%%)",
+                    title[:50], user_projects_count,
+                )
             else:
                 # Не отправляем сразу: кандидат ждёт в очереди, отклик уйдёт
                 # лучшему (см. _process_offer_queue).
