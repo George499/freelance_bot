@@ -412,6 +412,12 @@ async def cb_kwork_genoffer(callback: CallbackQuery, config: Settings):
     if not offer:
         await callback.message.answer("⚠️ Не удалось сгенерировать отклик, попробуй ещё раз.")
         return
+    if offer.get("decline"):
+        await callback.message.answer(
+            "🚫 Отклик не написан: "
+            f"{html.quote(offer.get('decline_reason') or 'заказ вне стека')}"
+        )
+        return
 
     price_line = ""
     rec = recommend_dump_price(price, is_fast)
@@ -420,7 +426,7 @@ async def cb_kwork_genoffer(callback: CallbackQuery, config: Settings):
 
     await callback.message.answer(
         f"✍️ <b>Черновик отклика</b> (проверь и поправь перед отправкой):\n\n"
-        f"{html.quote(offer)}{price_line}"
+        f"{html.quote(offer['text'])}{price_line}"
     )
 
 

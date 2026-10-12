@@ -119,12 +119,37 @@ _STACK_BAD = re.compile(
 )
 
 
+# Правка 12.10: чужие языки программирования. Чёрный список их не знал, и
+# белый пропускал заказ по общим словам: «Дописать утилиту на C#» прошла по
+# «утилиту», «модуль на C#» - по «интеграция». На оба ушли отклики-отказы
+# («C# не мой язык») - два потраченных коннекта. Режем, только если ни один
+# язык George в заказе не назван: «Django или ASP.NET» остаётся.
+# [cс] - заказчики пишут «с#» и кириллицей.
+_FOREIGN_LANG = re.compile(
+    r"(?<!\w)[cс]#|си\s*шарп|c\s*sharp|asp\.net|dotnet|\.net\s*(?:core|framework)|"
+    r"(?<![\w/.])\.net\b|\bwpf\b|winforms|xamarin|blazor|"
+    r"\bjava\b(?!\s*script)|(?<!\w)[cс]\+\+|\bdelphi\b|делфи|дельфи|\bvba\b|"
+    r"\bgolang\b|\brust\b|\bruby\b|\bperl\b|\bscala\b|\bmatlab\b|"
+    r"\barduino\b|ардуино|ассемблер\w*",
+    re.IGNORECASE,
+)
+_MY_LANG = re.compile(
+    r"\bpython\b|\bпитон\w*|\bdjango\b|\bfastapi\b|\bflask\b|\baiogram\b|"
+    r"\bnode\.?js\b|\bnest\.?js\b|\btypescript\b|\bjavascript\b|\bjs\b|"
+    r"\breact\b|\bnext\.?js\b",
+    re.IGNORECASE,
+)
+
+
 def is_my_stack(title: str, description: str) -> tuple[bool, str]:
     """True если заказ в зоне реальной компетенции. Чёрный список сильнее белого."""
     text = f"{title}\n{description}"
     bad = _STACK_BAD.search(text)
     if bad:
         return False, f"чужая зона: {bad.group(0)}"
+    foreign = _FOREIGN_LANG.search(text)
+    if foreign and not _MY_LANG.search(text):
+        return False, f"чужой язык: {foreign.group(0)}"
     ok = _STACK_OK.search(text)
     if not ok:
         return False, "нет маркеров моего стека"

@@ -699,6 +699,10 @@ async def _auto_offer_send(
         logger.warning("AutoOffer: генерация провалилась [%s]: %s", title[:50], exc)
         return
 
+    if offer and offer.get("decline"):
+        # заказ вне стека: отклик-отказ не шлём, коннект и слот не тратятся
+        logger.info("AutoOfferDeclined [%s]: %s", title[:50], offer.get("decline_reason"))
+        return
     if not offer or not offer.get("text"):
         logger.warning("AutoOffer: пустой ответ генератора [%s]", title[:50])
         return
