@@ -25,6 +25,7 @@ from app.auto_offer import (
     is_auto_enabled,
     is_my_stack,
     is_small_fresh,
+    offer_price,
     register_sent,
     send_offer,
     small_lane_open,
@@ -682,6 +683,9 @@ async def _auto_offer_send(
         logger.warning("AutoOffer: не извлёк id из %s", kw_project.url)
         return
 
+    # Правка 19.10: цену задаёт правило George (ниже бюджета), а не модель.
+    # Модели её передаём заранее, чтобы в тексте не всплыла другая сумма.
+    target_price = offer_price(price)
     try:
         offer = await generate_offer_claude(
             title=title,
@@ -694,6 +698,7 @@ async def _auto_offer_send(
             is_fast=price < 15000,
             offers_count=offers_count,
             buyer=", ".join(buyer_achievements_names or []) or "без медалей",
+            target_price=target_price,
         )
     except Exception as exc:
         logger.warning("AutoOffer: генерация провалилась [%s]: %s", title[:50], exc)
@@ -708,20 +713,14 @@ async def _auto_offer_send(
         return
 
     offer_text = offer["text"]
-    # Цену и срок предлагает модель (узкая ниша — ближе к верху вилки,
-    # мясорубка — низ). Зажимаем в границы: потолок Kwork 3x от нижней
-    # границы бюджета, пол — чтобы случайно не уйти работать за 100 ₽.
-    try:
-        send_price = int(offer.get("price") or price)
-    except (TypeError, ValueError):
-        send_price = price
-    if price:
-        send_price = max(500, min(send_price, price * 3))
-        if lane == "small":
-            # мелкая очередь - ради отзыва: не дороже бюджета заказчика
-            send_price = max(500, min(send_price, price))
+    if target_price:
+        send_price = target_price
     else:
-        send_price = max(500, send_price)
+        # бюджет заказа неизвестен - берём цену модели, но не меньше 500 ₽
+        try:
+            send_price = max(500, int(offer.get("price") or 0))
+        except (TypeError, ValueError):
+            send_price = 500
     try:
         send_days = int(offer.get("days") or duration_for(send_price))
     except (TypeError, ValueError):

@@ -252,6 +252,27 @@ SMALL_MAX_OFFERS = 10
 SMALL_PER_DAY = 1
 
 
+# === Цена отклика (правка 19.10, по решению George) ===
+# 35 автооткликов, 19 из них заказчик прочитал (readStatus на странице
+# /offers) - и ни одного ответа. Читают, но выбирают других: у George 2
+# отзыва, в категориях ботов и скриптов нет портфолио, а цена всегда была
+# ровно бюджет заказчика. George решил давать ниже бюджета: 10 000 -> 8 000.
+# Kwork это разрешает: в форме отклика на бюджет 10 000 допустимо от 2 000
+# (customMinPrice) до 30 000. Цену теперь задаёт это правило, а не модель:
+# 15.10 модель поставила 45 000 при бюджете 15 000.
+PRICE_DISCOUNT_PCT = 20
+PRICE_FLOOR = 500
+
+
+def offer_price(budget: int | None) -> int | None:
+    """Цена отклика: на PRICE_DISCOUNT_PCT ниже бюджета, круглым числом."""
+    if not budget:
+        return None
+    p = int(budget) * (100 - PRICE_DISCOUNT_PCT) // 100
+    step = 100 if p < 10_000 else 500
+    return max(PRICE_FLOOR, p // step * step)
+
+
 def is_small_fresh(price: int | None, offers: int | None) -> bool:
     return 0 < (price or 0) <= SMALL_PRICE and (offers or 0) < SMALL_MAX_OFFERS
 
