@@ -19,6 +19,8 @@ from typing import Dict, Optional
 
 import anthropic
 
+from app.anthropic_client import anthropic_client
+
 # is_my_stack живёт в auto_offer (там же стек-фильтр автоотправки):
 # держим один источник правды о зоне компетенции.
 from app.auto_offer import is_my_stack
@@ -4391,47 +4393,46 @@ async def score_project(
     fast_kwargs["review_farming_block"] = FAST_FARM_BLOCK if farm_mode_active else ""
 
     try:
-        client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
+        async with anthropic_client(anthropic_api_key) as client:
+            score_big_raw: Optional[int] = None
+            score_fast_raw: Optional[int] = None
 
-        score_big_raw: Optional[int] = None
-        score_fast_raw: Optional[int] = None
-
-        if category == "BIG":
-            ai_result = await _run_haiku_scoring(client, SCORING_PROMPT, big_kwargs, title)
-            score_big_raw = int(ai_result.get("score", 0))
-        elif category == "FAST":
-            ai_result = await _run_haiku_scoring(
-                client, FAST_SCORING_PROMPT, fast_kwargs, title, fallback_type="short",
-            )
-            score_fast_raw = int(ai_result.get("score", 0))
-        else:  # DUAL — оба промпта параллельно
-            big_result, fast_result = await asyncio.gather(
-                _run_haiku_scoring(client, SCORING_PROMPT, big_kwargs, title),
-                _run_haiku_scoring(
-                    client, FAST_SCORING_PROMPT, fast_kwargs, title,
-                    fallback_type="short",
-                ),
-            )
-            score_big_raw = int(big_result.get("score", 0))
-            score_fast_raw = int(fast_result.get("score", 0))
-            # Выбор: оба ≥7 → больший (FAST при равенстве); один ≥7 → его; иначе → больший.
-            if score_big_raw >= 7 and score_fast_raw >= 7:
-                if score_fast_raw >= score_big_raw:
-                    ai_result, dual_chosen = fast_result, "FAST"
-                else:
+            if category == "BIG":
+                ai_result = await _run_haiku_scoring(client, SCORING_PROMPT, big_kwargs, title)
+                score_big_raw = int(ai_result.get("score", 0))
+            elif category == "FAST":
+                ai_result = await _run_haiku_scoring(
+                    client, FAST_SCORING_PROMPT, fast_kwargs, title, fallback_type="short",
+                )
+                score_fast_raw = int(ai_result.get("score", 0))
+            else:  # DUAL — оба промпта параллельно
+                big_result, fast_result = await asyncio.gather(
+                    _run_haiku_scoring(client, SCORING_PROMPT, big_kwargs, title),
+                    _run_haiku_scoring(
+                        client, FAST_SCORING_PROMPT, fast_kwargs, title,
+                        fallback_type="short",
+                    ),
+                )
+                score_big_raw = int(big_result.get("score", 0))
+                score_fast_raw = int(fast_result.get("score", 0))
+                # Выбор: оба ≥7 → больший (FAST при равенстве); один ≥7 → его; иначе → больший.
+                if score_big_raw >= 7 and score_fast_raw >= 7:
+                    if score_fast_raw >= score_big_raw:
+                        ai_result, dual_chosen = fast_result, "FAST"
+                    else:
+                        ai_result, dual_chosen = big_result, "BIG"
+                elif score_big_raw >= 7:
                     ai_result, dual_chosen = big_result, "BIG"
-            elif score_big_raw >= 7:
-                ai_result, dual_chosen = big_result, "BIG"
-            elif score_fast_raw >= 7:
-                ai_result, dual_chosen = fast_result, "FAST"
-            elif score_big_raw >= score_fast_raw:
-                ai_result, dual_chosen = big_result, "BIG"
-            else:
-                ai_result, dual_chosen = fast_result, "FAST"
-            logger.info(
-                "DualMerge [%s]: BIG=%d FAST=%d → chosen=%s",
-                title[:60], score_big_raw, score_fast_raw, dual_chosen,
-            )
+                elif score_fast_raw >= 7:
+                    ai_result, dual_chosen = fast_result, "FAST"
+                elif score_big_raw >= score_fast_raw:
+                    ai_result, dual_chosen = big_result, "BIG"
+                else:
+                    ai_result, dual_chosen = fast_result, "FAST"
+                logger.info(
+                    "DualMerge [%s]: BIG=%d FAST=%d → chosen=%s",
+                    title[:60], score_big_raw, score_fast_raw, dual_chosen,
+                )
 
         score = int(ai_result.get("score", 0))
         is_ai_final = bool(ai_result.get("is_ai", is_ai)) or is_ai
@@ -4951,27 +4952,27 @@ async def generate_offer_claude(
     extra = ""
     for attempt in range(max_retries + 1):
         try:
-            client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
-            # Правка 21.09: JSON из свободного текста ломался на кавычках
-            # («Expecting ',' delimiter» на заказе за 110к, отклик не ушёл),
-            # поэтому структуру гарантирует API. Правка 13.10, Opus 5.5:
-            # - вместо принудительного tool_choice (теперь 400) структурированный
-            #   вывод output_config.format - валидный JSON в текстовом блоке;
-            # - модель думает всегда, рассуждения тратят тот же max_tokens:
-            #   прежние 2000 обрезали бы ответ, поэтому 16000;
-            # - effort по умолчанию стал medium (у Opus 5 был high) - задаём явно;
-            # - отказ классификатора безопасности: серверная подстраховка
-            #   fallbacks=default (ведёт на модель, которую Anthropic советует
-            #   для этой категории). SDK этой версии не знает параметра, он
-            #   уходит через extra_body. Если отказалась вся цепочка - отклика нет.
-            message = await client.beta.messages.create(
-                model=OFFER_MODEL,
-                max_tokens=16000,
-                betas=["server-side-fallback-2026-07-01"],
-                extra_body={"fallbacks": "default"},
-                output_config={"effort": "medium", "format": OFFER_FORMAT},
-                messages=[{"role": "user", "content": prompt + extra}],
-            )
+            async with anthropic_client(anthropic_api_key) as client:
+                # Правка 21.09: JSON из свободного текста ломался на кавычках
+                # («Expecting ',' delimiter» на заказе за 110к, отклик не ушёл),
+                # поэтому структуру гарантирует API. Правка 13.10, Opus 5.5:
+                # - вместо принудительного tool_choice (теперь 400) структурированный
+                #   вывод output_config.format - валидный JSON в текстовом блоке;
+                # - модель думает всегда, рассуждения тратят тот же max_tokens:
+                #   прежние 2000 обрезали бы ответ, поэтому 16000;
+                # - effort по умолчанию стал medium (у Opus 5 был high) - задаём явно;
+                # - отказ классификатора безопасности: серверная подстраховка
+                #   fallbacks=default (ведёт на модель, которую Anthropic советует
+                #   для этой категории). SDK этой версии не знает параметра, он
+                #   уходит через extra_body. Если отказалась вся цепочка - отклика нет.
+                message = await client.beta.messages.create(
+                    model=OFFER_MODEL,
+                    max_tokens=16000,
+                    betas=["server-side-fallback-2026-07-01"],
+                    extra_body={"fallbacks": "default"},
+                    output_config={"effort": "medium", "format": OFFER_FORMAT},
+                    messages=[{"role": "user", "content": prompt + extra}],
+                )
             if message.stop_reason == "refusal":
                 cat = getattr(message.stop_details, "category", None) if message.stop_details else None
                 logger.warning("Offer: отказ модели [%s]: %s", title[:50], cat)

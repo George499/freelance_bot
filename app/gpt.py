@@ -3,8 +3,9 @@ import logging
 import re
 from typing import Dict, Optional
 
-import anthropic
 import g4f
+
+from app.anthropic_client import anthropic_client
 
 g4f.debug.logging = False
 g4f.debug.version_check = False
@@ -306,13 +307,13 @@ async def filter_project(
     )
 
     try:
-        client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
-        message = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=200,
-            temperature=0,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        async with anthropic_client(anthropic_api_key) as client:
+            message = await client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=200,
+                temperature=0,
+                messages=[{"role": "user", "content": prompt}],
+            )
         raw = message.content[0].text.strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
@@ -342,12 +343,12 @@ async def generate_offer_claude(
         budget=budget,
     )
     try:
-        client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
-        message = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=600,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        async with anthropic_client(anthropic_api_key) as client:
+            message = await client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=600,
+                messages=[{"role": "user", "content": prompt}],
+            )
         return message.content[0].text.strip()
     except Exception as exc:
         logger.warning("Offer generation error for '%s': %s", title[:60], exc)

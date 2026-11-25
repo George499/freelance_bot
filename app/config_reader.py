@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     # ANTHROPIC_BASE_URL автоматически. Объявлено здесь чтобы pydantic не падал
     # на extra_forbidden когда переменная задана в .env.
     anthropic_base_url: Optional[str] = None
+    anthropic_unix_socket: Optional[str] = None
 
     # v4 раздел 9: первичное значение режима отзыв-фарма при отсутствии
     # farm_mode.json. Поле читается напрямую через os.environ в farm_mode.py;
