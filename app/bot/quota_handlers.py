@@ -401,6 +401,7 @@ async def cb_kwork_genoffer(callback: CallbackQuery, config: Settings):
     category = categorize_by_budget(price, price)
     is_fast = category == "FAST"
     budget_str = f"{price:,} ₽" if price else "не указан"
+    target_price = recommend_dump_price(price, is_fast)
 
     offer = await generate_offer_claude(
         title=project.title,
@@ -408,6 +409,7 @@ async def cb_kwork_genoffer(callback: CallbackQuery, config: Settings):
         budget=budget_str,
         anthropic_api_key=config.anthropic_api_key,
         is_fast=is_fast,
+        target_price=target_price,
     )
     if not offer:
         await callback.message.answer("⚠️ Не удалось сгенерировать отклик, попробуй ещё раз.")
@@ -419,14 +421,11 @@ async def cb_kwork_genoffer(callback: CallbackQuery, config: Settings):
         )
         return
 
-    price_line = ""
-    rec = recommend_dump_price(price, is_fast)
-    if rec:
-        price_line = f"\n\n💰 Рекомендую цену: <b>{rec:,} ₽</b> (ниже вилки, набор отзывов)"
-
+    form_price = f"{offer['price']:,}".replace(",", " ")
     await callback.message.answer(
         f"✍️ <b>Черновик отклика</b> (проверь и поправь перед отправкой):\n\n"
-        f"{html.quote(offer['text'])}{price_line}"
+        f"{html.quote(offer['text'])}\n\n"
+        f"Для формы Kwork: <b>{form_price} ₽</b>, срок <b>{offer['days']} дн.</b>"
     )
 
 

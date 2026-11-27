@@ -91,6 +91,13 @@ _STACK_OK = re.compile(
     re.IGNORECASE,
 )
 
+# «Node.js, не WordPress» описывает исключённую CMS. Убираем только
+# это упоминание: требование WordPress в другой части ТЗ остаётся в силе.
+_EXCLUDED_WORDPRESS = re.compile(
+    r"\b(?:не[ \t]+(?:на[ \t]+)?|без[ \t]+)(?:wordpress|вордпресс[ае]?)\b",
+    re.IGNORECASE,
+)
+
 # Чёрный список: чужая профессия. Перебивает белый.
 _STACK_BAD = re.compile(
     r"\b1с\b|\b1c\b|битрикс\w*|\bbitrix\w*|\bwordpress\b|вордпресс\w*|"
@@ -144,7 +151,7 @@ _MY_LANG = re.compile(
 def is_my_stack(title: str, description: str) -> tuple[bool, str]:
     """True если заказ в зоне реальной компетенции. Чёрный список сильнее белого."""
     text = f"{title}\n{description}"
-    bad = _STACK_BAD.search(text)
+    bad = _STACK_BAD.search(_EXCLUDED_WORDPRESS.sub(" ", text))
     if bad:
         return False, f"чужая зона: {bad.group(0)}"
     foreign = _FOREIGN_LANG.search(text)
@@ -307,24 +314,26 @@ def ready_lane() -> str | None:
     return None
 
 
-def take_best() -> tuple[dict | None, int]:
-    """Забрать лучшего кандидата. Возвращает (кандидат, осталось в очереди).
-
-    Остальных НЕ выбрасываем: если дневной бюджет позволяет, следующий
-    проход парсера отправит второму.
-    """
+def ranked_candidates(limit: int) -> list[dict]:
+    """Оставить кандидатов в очереди, пока Kwork не подтвердит их состояние."""
     state = get_state()
-    fresh = [c for c in (state.get("queue") or []) if not _is_stale(c)]
-    if not fresh:
+    queue = state.get("queue") or []
+    fresh = [c for c in queue if not _is_stale(c)]
+    if len(fresh) != len(queue):
         state["queue"] = fresh
         _save(state)
-        return None, 0
-    best = max(fresh, key=_rank)
-    state["queue"] = [
-        c for c in fresh if str(c.get("id")) != str(best.get("id"))
-    ]
+    return sorted(fresh, key=_rank, reverse=True)[:limit]
+
+
+def remove_candidate(project_id) -> bool:
+    state = get_state()
+    queue = state.get("queue") or []
+    rest = [c for c in queue if str(c.get("id")) != str(project_id)]
+    if len(rest) == len(queue):
+        return False
+    state["queue"] = rest
     _save(state)
-    return best, len(state["queue"])
+    return True
 
 
 def queue_size() -> int:
@@ -332,7 +341,7 @@ def queue_size() -> int:
 
 
 def register_sent(project_id, title: str, price: int, text: str = "",
-                  lane: str = "") -> dict:
+                  lane: str = "", offers_before_send: int | None = None) -> dict:
     """Записать отправку. Текст сохраняем: Telegram Bot API не даёт боту
     читать свою же историю, и без этого разобрать «почему нет ответов»
     можно только попросив George переслать сообщение вручную.
@@ -344,7 +353,9 @@ def register_sent(project_id, title: str, price: int, text: str = "",
     state.setdefault("log", []).insert(0, {
         "id": str(project_id), "title": title[:70],
         "price": price, "at": date.today().isoformat(),
-        "text": (text or "")[:900], "lane": lane,
+        "sent_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "offers_before_send": offers_before_send,
+        "text": text or "", "lane": lane,
     })
     state["log"] = state["log"][:50]
     _save(state)

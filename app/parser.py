@@ -18,10 +18,10 @@ from app.auto_offer import (
     can_send_today,
     daily_budget,
     enqueue,
+    ranked_candidates,
     ready_lane,
-    take_best,
+    remove_candidate,
     duration_for,
-    get_state as get_auto_state,
     is_auto_enabled,
     is_my_stack,
     is_small_fresh,
@@ -36,6 +36,7 @@ from app.kwork_filter import (
     HIGH_OFFERS_ABS,
     LOW_OFFERS_ABS,
     RECHECK_SCHEDULE_MIN,
+    categorize_by_budget,
     classify_offer_dynamics,
     generate_offer_claude,
     next_recheck_delay_min,
@@ -72,6 +73,8 @@ FRESH_TIME_LEFT_MIN_SEC = 2 * 86400      # ≥ 2 дня — заказ скор�
 LATE_OFFERS_MIN = 30
 LATE_TIME_LEFT_MAX_SEC = 12 * 3600       # < 12 ч — приём почти закрыт
 LOW_QUOTA_THRESHOLD = 5                  # при ≤5 оставшихся квот не тратимся на 🔴
+FAST_OFFERS_LIMIT = 20
+LARGE_OFFERS_LIMIT = 25
 
 
 def _freshness_badge(time_left_sec: int, offers_count: int) -> tuple[str, str]:
@@ -579,6 +582,85 @@ def kw_id_from_url(url: str) -> str | None:
     return m.group(1) if m else None
 
 
+class _QueueCheckUnavailable(Exception):
+    """Карточку временно нельзя проверить, кандидат должен остаться в очереди."""
+
+
+def _card_int(data: dict, key: str) -> int:
+    value = data.get(key)
+    if type(value) is int or (
+        isinstance(value, str) and value.isascii() and value.isdecimal()
+    ):
+        return int(value)
+    raise _QueueCheckUnavailable(f"нет достоверного поля {key}")
+
+
+def _queue_skip_reason(data: dict, project, candidate: dict, quota: dict) -> str:
+    status = data.get("status")
+    if not isinstance(status, str) or not status:
+        raise _QueueCheckUnavailable("нет статуса")
+    if status != "active":
+        return f"статус {status}"
+    if type(data.get("has_offer")) is not bool:
+        raise _QueueCheckUnavailable("неизвестно, был ли уже отклик")
+    if data["has_offer"]:
+        return "уже откликались"
+    offers = _card_int(data, "offers")
+    if offers < 0:
+        raise _QueueCheckUnavailable("отрицательное число откликов")
+    price = _card_int(data, "price")
+    if price != candidate["price"]:
+        return "изменился бюджет"
+    category = categorize_by_budget(price)
+    limit = FAST_OFFERS_LIMIT if category == "FAST" else LARGE_OFFERS_LIMIT
+    if offers >= limit:
+        return f"{category}, {offers} откликов при пороге {limit}"
+    time_left = _card_int(data, "time_left")
+    if time_left <= 0:
+        return "приём откликов завершён"
+    age_sec = datetime.now().timestamp() - _card_int(data, "date_confirm")
+    if age_sec > MAX_ORDER_AGE_HOURS * 3600:
+        return "заказ старше срока отбора"
+    if quota["remaining"] <= LOW_QUOTA_THRESHOLD and _freshness_badge(time_left, offers)[0] == "🔴":
+        return "поздний заказ при малом остатке коннектов"
+    min_budget = 2000 if is_farm_mode_active() and offers < LOW_OFFERS_ABS else 5000
+    if 0 < price < min_budget:
+        return "дешёвый заказ вне условий фарма отзывов"
+    if _card_int(data, "user_projects_count") >= 3 and data.get("user_hired_percent") in (0, "0"):
+        return "заказчик разместил как минимум три заказа без найма"
+    respond, reason = should_respond(candidate["score"], quota, candidate.get("is_ai", False))
+    if not respond and not (reason.startswith("скор ") and candidate["score"] >= 6 and offers < 5):
+        return reason
+    if not all(isinstance(data.get(key), str) and data[key].strip() for key in ("title", "description")):
+        raise _QueueCheckUnavailable("нет заголовка или текста заказа")
+    desc = htmlp(data["description"]).text(separator="\n", strip=True)
+    if data["title"].split() != project.title.split() or desc.split() != project.description.split():
+        return "заказчик изменил задание после отбора"
+    stack_ok, reason = is_my_stack(project.title, project.description)
+    return "" if stack_ok else reason
+
+
+async def _current_queue_offers(kwork, token, candidate: dict, project, quota: dict) -> int | None:
+    project_id = candidate["id"]
+    try:
+        resp = await kwork.api_request(method="post", api_method="project", id=project_id, token=token)
+    except Exception as exc:
+        raise _QueueCheckUnavailable(str(exc)) from exc
+    if not isinstance(resp, dict) or resp.get("success") is not True or "response" not in resp:
+        raise _QueueCheckUnavailable("Kwork не подтвердил запрос карточки")
+    data = resp["response"]
+    if data == {} or data == []:
+        logger.info("OfferQueue: заказ %s снят", project_id)
+        return None
+    if not isinstance(data, dict) or str(data.get("id")) != str(project_id):
+        raise _QueueCheckUnavailable("неизвестный формат или ID карточки")
+    reason = _queue_skip_reason(data, project, candidate, quota)
+    if reason:
+        logger.info("OfferQueueSkip [%s]: %s (откликов при проверке: %s)", project_id, reason, data.get("offers"))
+        return None
+    return int(data["offers"])
+
+
 async def _process_offer_queue(bot: Bot, config: Settings, kwork, token) -> None:
     """Отправить отклик лучшему кандидату из очереди.
 
@@ -595,7 +677,8 @@ async def _process_offer_queue(bot: Bot, config: Settings, kwork, token) -> None
     quota_state = get_quota()
     remaining = MONTHLY_QUOTA - quota_state["responses_used"]
     days_left = get_days_until_refill()
-    if not can_send_today(remaining, days_left):
+    quota = quota_status(quota_state["responses_used"], quota_state["responses_used_today"], days_left)
+    if not quota["daily_allowed"] or not can_send_today(remaining, days_left):
         logger.info(
             "OfferQueue[%s]: есть кандидат, но дневной бюджет %d исчерпан "
             "(остаток %d на %d дн.)",
@@ -606,53 +689,25 @@ async def _process_offer_queue(bot: Bot, config: Settings, kwork, token) -> None
     # Закрытый заказ пропускаем в ТОМ ЖЕ проходе и берём следующего:
     # 24.09 к вечеру были закрыты четыре кандидата из шести, и каждый
     # съедал бы по 10 минут до следующего прохода.
-    for _ in range(5):
-        best, left = take_best()
-        if not best:
-            return
-        logger.info(
-            "OfferQueue[%s]: выбран [%s] скор %s, %s ₽ (в очереди осталось %d)",
-            lane, str(best.get("title"))[:50], best.get("score"),
-            best.get("price"), left,
-        )
-
-        # Пока кандидат ждал в очереди, заказ могли закрыть — проверяем.
-        try:
-            resp = await kwork.api_request(
-                method="post", api_method="project", id=best["id"], token=token,
-            )
-            data = resp.get("response") if isinstance(resp, dict) else None
-        except Exception as exc:
-            logger.warning("OfferQueue: не проверил заказ [%s]: %s", best["id"], exc)
-            data = None
-        if data is not None and not data:
-            logger.info("OfferQueue: заказ %s снят — берём следующего", best["id"])
-            continue
-        if data and data.get("status") != "active":
-            logger.info(
-                "OfferQueue: заказ %s уже не active (%s) — берём следующего",
-                best["id"], data.get("status"),
-            )
-            continue
-
+    for best in ranked_candidates(5):
         project = await Project.objects().where(Project.id == best["db_id"]).first()
-        if not project:
-            logger.warning("OfferQueue: заказ %s пропал из БД", best["id"])
+        if not project or kw_id_from_url(project.url) != str(best["id"]):
+            logger.warning("OfferQueue: в БД нет совпадающего заказа %s", best["id"])
+            remove_candidate(best["id"])
             continue
 
-        score_result = {
-            "score": best.get("score", 0),
-            "is_ai": best.get("is_ai", False),
-            "scope_unclear": best.get("scope_unclear", False),
-            "site_category": best.get("site_category", "not_site"),
-        }
-        await _auto_offer_send(
-            bot, config, project, best.get("title", ""), best.get("desc", ""),
-            best.get("budget_str", ""), best.get("price", 0), score_result,
-            (data or {}).get("offers", best.get("offers", 0)),
-            [best["buyer"]] if best.get("buyer") else [],
-            lane=lane,
-        )
+        try:
+            current = await _current_queue_offers(kwork, token, best, project, quota)
+            if current is None:
+                remove_candidate(best["id"])
+                continue
+            await _auto_offer_send(
+                bot, config, project, best, current, kwork, token, quota, lane=lane,
+            )
+        except _QueueCheckUnavailable as exc:
+            logger.warning("OfferQueueRetry [%s]: %s", best["id"], exc)
+            continue
+        remove_candidate(best["id"])
         return
 
 
@@ -663,10 +718,8 @@ _LANE_LABEL = {
 
 
 async def _auto_offer_send(
-    bot: Bot, config: Settings, kw_project, title: str, desc: str,
-    budget_str: str, price: int, score_result: dict,
-    offers_count: int = 0, buyer_achievements_names: list | None = None,
-    lane: str = "",
+    bot: Bot, config: Settings, kw_project, candidate: dict, offers_count: int,
+    kwork, token, quota: dict, lane: str,
 ) -> None:
     """Сгенерировать и отправить отклик, затем отчитаться в Telegram.
 
@@ -675,27 +728,27 @@ async def _auto_offer_send(
     включённом автоотклике не шлются, так что отчёт - единственное, что
     George видит о заказе: в нём ссылка, бюджет, конкуренция и очередь.
     """
-    m = re.search(r"/projects/(\d+)", kw_project.url or "")
-    kw_id = m.group(1) if m else None
-    if not kw_id:
+    kw_id = kw_id_from_url(kw_project.url)
+    if not kw_id or kw_id != str(candidate["id"]):
         logger.warning("AutoOffer: не извлёк id из %s", kw_project.url)
         return
 
     # Правка 19.10: цену задаёт правило George (ниже бюджета), а не модель.
     # Модели её передаём заранее, чтобы в тексте не всплыла другая сумма.
+    title, price = kw_project.title, candidate["price"]
     target_price = offer_price(price)
     try:
         offer = await generate_offer_claude(
             title=title,
-            description=desc,
-            budget=budget_str,
+            description=kw_project.description,
+            budget=candidate["budget_str"],
             anthropic_api_key=config.anthropic_api_key,
-            is_ai=score_result.get("is_ai", False),
-            scope_unclear=score_result.get("scope_unclear", False),
-            site_category=score_result.get("site_category", "not_site"),
+            is_ai=candidate.get("is_ai", False),
+            scope_unclear=candidate.get("scope_unclear", False),
+            site_category=candidate.get("site_category", "not_site"),
             is_fast=price < 15000,
             offers_count=offers_count,
-            buyer=", ".join(buyer_achievements_names or []) or "без медалей",
+            buyer=candidate.get("buyer") or "без медалей",
             target_price=target_price,
         )
     except Exception as exc:
@@ -725,14 +778,33 @@ async def _auto_offer_send(
         send_days = duration_for(send_price)
     send_days = max(1, min(send_days, 30))
 
+    try:
+        current = await _current_queue_offers(kwork, token, candidate, kw_project, quota)
+    except _QueueCheckUnavailable as exc:
+        if lane != "small":
+            raise
+        enqueue(candidate)
+        logger.warning("SmallFreshRetry [%s]: %s, отложен до проверки", kw_id, exc)
+        return
+    if current is None:
+        return
+    if lane == "small" and not (
+        is_small_fresh(price, current) and small_lane_open()
+        and can_send_today(quota["remaining"], quota["days_left"])
+    ):
+        enqueue(candidate)
+        logger.info("SmallFreshDeferred [%s]: %d откликов перед отправкой", kw_id, current)
+        return
+    if lane != "small" and not remove_candidate(kw_id):
+        return
     ok, detail = await send_offer(
         config=config, project_id=kw_id, description=offer_text,
         price=send_price, title=title, days=send_days,
     )
     if ok:
-        register_sent(kw_id, title, send_price, offer_text, lane=lane)
-        state = get_auto_state()
-        logger.info("AutoOfferSent [%s] за %s ₽ (%s)", title[:50], send_price, lane)
+        state = register_sent(kw_id, title, send_price, offer_text, lane=lane, offers_before_send=current)
+        logger.info("AutoOfferSent [%s] %s за %s ₽ (%s), откликов было %d, отправлен %s",
+                    kw_id, title[:50], send_price, lane, current, state["log"][0]["sent_at"])
         # Правка 02.10: раньше в строке «Цена» стоял бюджет заказа, а не цена
         # отклика, и лимит был константой 3 вместо реального бюджета дня.
         remaining = MONTHLY_QUOTA - get_quota()["responses_used"]
@@ -744,7 +816,7 @@ async def _auto_offer_send(
             text=(
                 f"🤖 <b>Отклик отправлен</b> · {_LANE_LABEL.get(lane, 'автоотклик')}\n"
                 f'<a href="{url}">{html.quote(title[:70])}</a>\n'
-                f"Бюджет заказа: {price} ₽ · откликов было: {offers_count}\n"
+                f"Бюджет заказа: {price} ₽ · откликов было: {current}\n"
                 f"Наш отклик: <b>{send_price} ₽</b>, срок {send_days} дн. · "
                 f"сегодня {state.get('sent_today')}/{day_budget}\n\n"
                 f"<i>Текст, ушедший заказчику:</i>\n{html.quote(offer_text)}"
@@ -785,7 +857,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
     except Exception as exc:
         logger.warning("pending rechecks failed: %s", exc)
 
-    # Окно накопления автоотклика: если 3 часа прошли — шлём лучшему.
+    # После очереди лента обновит остаток коннектов для немедленных откликов.
     try:
         await _process_offer_queue(bot, config, kwork, token)
     except Exception as exc:
@@ -867,6 +939,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
                     "date_confirm": item.get("date_confirm", 0),
                     "status": item.get("status"),
                     "hired_percent": _extract_hired_percent(item),
+                    "user_projects_count": item.get("user_projects_count"),
                     "buyer_achievements_count": len(achievements),
                     "buyer_achievements_names": achievement_names,
                 }
@@ -1108,7 +1181,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
         #    мёртвый коннект);
         #  - BIG/DUAL: абсолют >= 25 → флип в QUALI ("очередь забита, нужен козырь").
         _cat = score_result.get("category")
-        if _cat == "FAST" and offers_count >= 20:
+        if _cat == "FAST" and offers_count >= FAST_OFFERS_LIMIT:
             stats["low_score_silenced"] += 1
             logger.info(
                 "VelocityGateSkip [FAST %s]: %d откликов ≥20 — очередь забита, SKIP",
@@ -1117,7 +1190,7 @@ async def get_kwork_projects(bot: Bot, config: Settings):
             await asyncio.sleep(random.choice([1, 2, 3]))
             continue
         velocity_quali = False
-        if _cat in ("BIG", "DUAL") and offers_count >= 25 and respond:
+        if _cat in ("BIG", "DUAL") and offers_count >= LARGE_OFFERS_LIMIT and respond:
             respond = False
             velocity_quali = True
             decision_reason = (
@@ -1312,34 +1385,12 @@ async def get_kwork_projects(bot: Bot, config: Settings):
                     "AutoOfferSkip [%s]: заказчик не нанимает (%d заказов, 0%%)",
                     title[:50], user_projects_count,
                 )
-            elif (is_small_fresh(price, offers_count) and small_lane_open()
-                  and can_send_today(quota["remaining"], quota["days_left"])):
-                # Мелкая очередь (02.10): мелкий заказ, пока на нём меньше 10
-                # откликов, - отклик сразу, ради отзыва. Границы и дневной
-                # лимит - auto_offer.SMALL_*.
-                logger.info(
-                    "SmallFresh [%s]: %d ₽, %d откликов — отклик сразу",
-                    title[:50], price, offers_count,
-                )
-                await _auto_offer_send(
-                    bot, config, kw_project, title, desc, budget_str, price,
-                    score_result, offers_count, buyer_achievements_names,
-                    lane="small",
-                )
             else:
-                # Не отправляем сразу: кандидат ждёт в очереди, отклик уйдёт
-                # лучшему (см. _process_offer_queue).
-                # Правка 25.09: в очередь ставим, даже если дневной лимит уже
-                # выбран. Раньше такой заказ выбрасывался: так пропал бы
-                # «AI-агент в TG», найденный 24.09 в 23:56 после двух вечерних
-                # откликов, а вечер - пик заказов. Теперь кандидат ждёт нового
-                # дня и уходит, как только обнулится лимит. Очередь держит его
-                # сутки и перед отправкой проверяет, открыт ли ещё заказ.
-                n = enqueue({
+                candidate = {
                     "id": kw_id_from_url(kw_project.url),
                     "db_id": kw_project.id,
                     "title": title,
-                    "desc": desc[:4000],
+                    "desc": desc,
                     "budget_str": budget_str,
                     "price": price,
                     "score": score_result["score"],
@@ -1348,14 +1399,20 @@ async def get_kwork_projects(bot: Bot, config: Settings):
                     "is_ai": score_result.get("is_ai", False),
                     "scope_unclear": score_result.get("scope_unclear", False),
                     "site_category": score_result.get("site_category", "not_site"),
-                })
-                waits = "" if can_send_today(
-                    quota["remaining"], quota["days_left"]
-                ) else ", лимит на сегодня выбран - ждёт нового дня"
-                logger.info(
-                    "AutoOfferQueued [%s]: скор %d, %d ₽ — в окне %d кандидат(ов)%s",
-                    title[:50], score_result["score"], price, n, waits,
-                )
+                }
+                day_open = can_send_today(quota["remaining"], quota["days_left"])
+                if is_small_fresh(price, offers_count) and small_lane_open() and day_open:
+                    logger.info("SmallFresh [%s]: %d ₽, %d откликов", title[:50], price, offers_count)
+                    await _auto_offer_send(
+                        bot, config, kw_project, candidate, offers_count, kwork, token, quota, lane="small",
+                    )
+                else:
+                    n = enqueue(candidate)
+                    waits = "" if day_open else ", лимит на сегодня выбран - ждёт нового дня"
+                    logger.info(
+                        "AutoOfferQueued [%s]: скор %d, %d ₽ — в окне %d кандидат(ов)%s",
+                        title[:50], score_result["score"], price, n, waits,
+                    )
 
         # Генерация черновика отклика временно отключена — user разбирает
         # вручную в Claude-чате. Раскомментировать когда промпт доведём.
